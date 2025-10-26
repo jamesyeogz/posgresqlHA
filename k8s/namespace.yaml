@@ -1,0 +1,10 @@
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: hapostgresql
+  labels:
+    name: hapostgresql
+    app: patroni-ha-cluster
+  annotations:
+    description: "Namespace for Patroni PostgreSQL HA cluster with etcd and HAProxy"

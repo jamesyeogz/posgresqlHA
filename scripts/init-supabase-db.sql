@@ -1,0 +1,450 @@
+-- Supabase Database Initialization Script
+-- Run this script on your Patroni PostgreSQL cluster before deploying Supabase
+-- Usage: psql -h localhost -p 5432 -U postgres -f scripts/init-supabase-db.sql
+
+\echo 'Starting Supabase database initialization...'
+
+-- Create required extensions
+\echo 'Creating extensions...'
+CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
+CREATE EXTENSION IF NOT EXISTS "pgcrypto";
+CREATE EXTENSION IF NOT EXISTS "pgjwt";
+CREATE EXTENSION IF NOT EXISTS "pg_stat_statements";
+CREATE EXTENSION IF NOT EXISTS "pg_graphql";
+CREATE EXTENSION IF NOT EXISTS "pg_jsonschema";
+CREATE EXTENSION IF NOT EXISTS "wrappers";
+CREATE EXTENSION IF NOT EXISTS "vault";
+
+-- Create Supabase schemas
+\echo 'Creating schemas...'
+CREATE SCHEMA IF NOT EXISTS auth;
+CREATE SCHEMA IF NOT EXISTS storage;
+CREATE SCHEMA IF NOT EXISTS realtime;
+CREATE SCHEMA IF NOT EXISTS _analytics;
+CREATE SCHEMA IF NOT EXISTS _realtime;
+CREATE SCHEMA IF NOT EXISTS graphql_public;
+CREATE SCHEMA IF NOT EXISTS extensions;
+CREATE SCHEMA IF NOT EXISTS net;
+CREATE SCHEMA IF NOT EXISTS vault;
+
+-- Create roles
+\echo 'Creating roles...'
+DO $$
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'anon') THEN
+        CREATE ROLE anon NOLOGIN;
+    END IF;
+    
+    IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'authenticated') THEN
+        CREATE ROLE authenticated NOLOGIN;
+    END IF;
+    
+    IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'service_role') THEN
+        CREATE ROLE service_role NOLOGIN;
+    END IF;
+    
+    IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'supabase_admin') THEN
+        CREATE ROLE supabase_admin NOLOGIN;
+    END IF;
+    
+    IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'supabase_auth_admin') THEN
+        CREATE ROLE supabase_auth_admin NOLOGIN;
+    END IF;
+    
+    IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'supabase_storage_admin') THEN
+        CREATE ROLE supabase_storage_admin NOLOGIN;
+    END IF;
+    
+    IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'dashboard_user') THEN
+        CREATE ROLE dashboard_user NOLOGIN;
+    END IF;
+END
+$$;
+
+-- Grant basic permissions
+\echo 'Setting up basic permissions...'
+GRANT USAGE ON SCHEMA public TO anon, authenticated, service_role;
+GRANT ALL ON ALL TABLES IN SCHEMA public TO anon, authenticated, service_role;
+GRANT ALL ON ALL SEQUENCES IN SCHEMA public TO anon, authenticated, service_role;
+GRANT ALL ON ALL FUNCTIONS IN SCHEMA public TO anon, authenticated, service_role;
+
+-- Set up default privileges
+ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON TABLES TO anon, authenticated, service_role;
+ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON SEQUENCES TO anon, authenticated, service_role;
+ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON FUNCTIONS TO anon, authenticated, service_role;
+
+-- Auth schema setup
+\echo 'Setting up auth schema...'
+GRANT ALL ON SCHEMA auth TO supabase_auth_admin;
+GRANT USAGE ON SCHEMA auth TO anon, authenticated, service_role;
+
+-- Create auth.users table
+CREATE TABLE IF NOT EXISTS auth.users (
+    instance_id UUID,
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    aud VARCHAR(255),
+    role VARCHAR(255),
+    email VARCHAR(255) UNIQUE,
+    encrypted_password VARCHAR(255),
+    email_confirmed_at TIMESTAMPTZ,
+    invited_at TIMESTAMPTZ,
+    confirmation_token VARCHAR(255),
+    confirmation_sent_at TIMESTAMPTZ,
+    recovery_token VARCHAR(255),
+    recovery_sent_at TIMESTAMPTZ,
+    email_change_token_new VARCHAR(255),
+    email_change VARCHAR(255),
+    email_change_sent_at TIMESTAMPTZ,
+    last_sign_in_at TIMESTAMPTZ,
+    raw_app_meta_data JSONB,
+    raw_user_meta_data JSONB,
+    is_super_admin BOOLEAN,
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    updated_at TIMESTAMPTZ DEFAULT NOW(),
+    phone TEXT UNIQUE,
+    phone_confirmed_at TIMESTAMPTZ,
+    phone_change TEXT,
+    phone_change_token VARCHAR(255),
+    phone_change_sent_at TIMESTAMPTZ,
+    confirmed_at TIMESTAMPTZ GENERATED ALWAYS AS (LEAST(email_confirmed_at, phone_confirmed_at)) STORED,
+    email_change_token_current VARCHAR(255) DEFAULT '',
+    email_change_confirm_status SMALLINT DEFAULT 0,
+    banned_until TIMESTAMPTZ,
+    reauthentication_token VARCHAR(255),
+    reauthentication_sent_at TIMESTAMPTZ,
+    is_sso_user BOOLEAN DEFAULT FALSE,
+    deleted_at TIMESTAMPTZ,
+    is_anonymous BOOLEAN DEFAULT FALSE
+);
+
+-- Create auth.refresh_tokens table
+CREATE TABLE IF NOT EXISTS auth.refresh_tokens (
+    instance_id UUID,
+    id BIGSERIAL PRIMARY KEY,
+    token VARCHAR(255) UNIQUE,
+    user_id UUID REFERENCES auth.users(id) ON DELETE CASCADE,
+    revoked BOOLEAN,
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    updated_at TIMESTAMPTZ DEFAULT NOW(),
+    parent VARCHAR(255),
+    session_id UUID
+);
+
+-- Create auth.instances table
+CREATE TABLE IF NOT EXISTS auth.instances (
+    id UUID PRIMARY KEY,
+    uuid UUID,
+    raw_base_config TEXT,
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- Create auth.audit_log_entries table
+CREATE TABLE IF NOT EXISTS auth.audit_log_entries (
+    instance_id UUID,
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    payload JSON,
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    ip_address VARCHAR(64) DEFAULT ''
+);
+
+-- Create auth.flow_state table
+CREATE TABLE IF NOT EXISTS auth.flow_state (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id UUID,
+    auth_code TEXT NOT NULL,
+    code_challenge_method TEXT NOT NULL,
+    code_challenge TEXT NOT NULL,
+    provider_type TEXT NOT NULL,
+    provider_access_token TEXT,
+    provider_refresh_token TEXT,
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    updated_at TIMESTAMPTZ DEFAULT NOW(),
+    authentication_method TEXT NOT NULL
+);
+
+-- Create auth.sessions table
+CREATE TABLE IF NOT EXISTS auth.sessions (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id UUID NOT NULL REFERENCES auth.users(id) ON DELETE CASCADE,
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    updated_at TIMESTAMPTZ DEFAULT NOW(),
+    factor_id UUID,
+    aal TEXT,
+    not_after TIMESTAMPTZ,
+    refreshed_at TIMESTAMP,
+    user_agent TEXT,
+    ip INET,
+    tag TEXT
+);
+
+-- Create auth.mfa_amr_claims table
+CREATE TABLE IF NOT EXISTS auth.mfa_amr_claims (
+    session_id UUID NOT NULL REFERENCES auth.sessions(id) ON DELETE CASCADE,
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    updated_at TIMESTAMPTZ DEFAULT NOW(),
+    authentication_method TEXT NOT NULL,
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid()
+);
+
+-- Create auth.mfa_factors table
+CREATE TABLE IF NOT EXISTS auth.mfa_factors (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id UUID NOT NULL REFERENCES auth.users(id) ON DELETE CASCADE,
+    friendly_name TEXT,
+    factor_type TEXT NOT NULL CHECK (factor_type IN ('totp', 'webauthn')),
+    status TEXT NOT NULL,
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    updated_at TIMESTAMPTZ DEFAULT NOW(),
+    secret TEXT
+);
+
+-- Create auth.mfa_challenges table
+CREATE TABLE IF NOT EXISTS auth.mfa_challenges (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    factor_id UUID NOT NULL REFERENCES auth.mfa_factors(id) ON DELETE CASCADE,
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    verified_at TIMESTAMPTZ,
+    ip_address INET NOT NULL
+);
+
+-- Create auth.one_time_tokens table
+CREATE TABLE IF NOT EXISTS auth.one_time_tokens (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id UUID NOT NULL REFERENCES auth.users(id) ON DELETE CASCADE,
+    token_type TEXT NOT NULL CHECK (token_type IN ('confirmation_token', 'reauthentication_token', 'recovery_token', 'email_change_token_new', 'email_change_token_current', 'phone_change_token')),
+    token_hash TEXT NOT NULL,
+    relates_to TEXT NOT NULL,
+    created_at TIMESTAMP DEFAULT NOW(),
+    updated_at TIMESTAMP DEFAULT NOW()
+);
+
+-- Storage schema setup
+\echo 'Setting up storage schema...'
+GRANT ALL ON SCHEMA storage TO supabase_storage_admin;
+GRANT USAGE ON SCHEMA storage TO anon, authenticated, service_role;
+
+-- Create storage.buckets table
+CREATE TABLE IF NOT EXISTS storage.buckets (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    owner UUID REFERENCES auth.users(id),
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    updated_at TIMESTAMPTZ DEFAULT NOW(),
+    public BOOLEAN DEFAULT FALSE,
+    avif_autodetection BOOLEAN DEFAULT FALSE,
+    file_size_limit BIGINT,
+    allowed_mime_types TEXT[],
+    owner_id TEXT
+);
+
+-- Create storage.objects table
+CREATE TABLE IF NOT EXISTS storage.objects (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    bucket_id TEXT REFERENCES storage.buckets(id),
+    name TEXT,
+    owner UUID REFERENCES auth.users(id),
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    updated_at TIMESTAMPTZ DEFAULT NOW(),
+    last_accessed_at TIMESTAMPTZ DEFAULT NOW(),
+    metadata JSONB,
+    version TEXT,
+    owner_id TEXT,
+    path_tokens TEXT[] GENERATED ALWAYS AS (string_to_array(name, '/')) STORED
+);
+
+-- Create storage.s3_multipart_uploads table
+CREATE TABLE IF NOT EXISTS storage.s3_multipart_uploads (
+    id TEXT PRIMARY KEY,
+    in_progress_size BIGINT DEFAULT 0,
+    upload_signature TEXT,
+    bucket_id TEXT REFERENCES storage.buckets(id),
+    key TEXT NOT NULL,
+    version TEXT,
+    owner_id TEXT,
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    user_metadata JSONB
+);
+
+-- Create storage.s3_multipart_uploads_parts table
+CREATE TABLE IF NOT EXISTS storage.s3_multipart_uploads_parts (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    upload_id TEXT REFERENCES storage.s3_multipart_uploads(id) ON DELETE CASCADE,
+    size BIGINT DEFAULT 0,
+    part_number INT,
+    bucket_id TEXT REFERENCES storage.buckets(id),
+    key TEXT,
+    etag TEXT,
+    owner_id TEXT,
+    version TEXT,
+    created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- Realtime schema setup
+\echo 'Setting up realtime schema...'
+GRANT USAGE ON SCHEMA _realtime TO service_role;
+
+-- Create _realtime.subscription table
+CREATE TABLE IF NOT EXISTS _realtime.subscription (
+    id BIGSERIAL PRIMARY KEY,
+    subscription_id UUID NOT NULL,
+    entity REGCLASS NOT NULL,
+    filters JSONB DEFAULT '[]'::JSONB NOT NULL,
+    claims JSONB NOT NULL,
+    claims_role TEXT GENERATED ALWAYS AS (claims ->> 'role') STORED,
+    created_at TIMESTAMP DEFAULT timezone('utc', NOW()) NOT NULL
+);
+
+-- Create _realtime.schema_migrations table
+CREATE TABLE IF NOT EXISTS _realtime.schema_migrations (
+    version BIGINT PRIMARY KEY,
+    inserted_at TIMESTAMP DEFAULT NOW()
+);
+
+-- Analytics schema setup
+\echo 'Setting up analytics schema...'
+GRANT USAGE ON SCHEMA _analytics TO service_role;
+
+-- Create _analytics.page_views table
+CREATE TABLE IF NOT EXISTS _analytics.page_views (
+    id BIGSERIAL PRIMARY KEY,
+    page_url TEXT NOT NULL,
+    referrer TEXT,
+    user_agent TEXT,
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    session_id UUID,
+    user_id UUID REFERENCES auth.users(id)
+);
+
+-- Create indexes for performance
+\echo 'Creating indexes...'
+CREATE INDEX IF NOT EXISTS users_email_idx ON auth.users(email);
+CREATE INDEX IF NOT EXISTS users_phone_idx ON auth.users(phone);
+CREATE INDEX IF NOT EXISTS users_instance_id_idx ON auth.users(instance_id);
+CREATE INDEX IF NOT EXISTS refresh_tokens_token_idx ON auth.refresh_tokens(token);
+CREATE INDEX IF NOT EXISTS refresh_tokens_user_id_idx ON auth.refresh_tokens(user_id);
+CREATE INDEX IF NOT EXISTS audit_log_entries_instance_id_idx ON auth.audit_log_entries(instance_id);
+CREATE INDEX IF NOT EXISTS sessions_user_id_idx ON auth.sessions(user_id);
+CREATE INDEX IF NOT EXISTS mfa_factors_user_id_idx ON auth.mfa_factors(user_id);
+CREATE INDEX IF NOT EXISTS objects_bucket_id_idx ON storage.objects(bucket_id);
+CREATE INDEX IF NOT EXISTS objects_name_idx ON storage.objects(name);
+CREATE INDEX IF NOT EXISTS subscription_subscription_id_idx ON _realtime.subscription(subscription_id);
+
+-- Enable Row Level Security
+\echo 'Enabling Row Level Security...'
+ALTER TABLE auth.users ENABLE ROW LEVEL SECURITY;
+ALTER TABLE auth.refresh_tokens ENABLE ROW LEVEL SECURITY;
+ALTER TABLE auth.audit_log_entries ENABLE ROW LEVEL SECURITY;
+ALTER TABLE auth.sessions ENABLE ROW LEVEL SECURITY;
+ALTER TABLE auth.mfa_factors ENABLE ROW LEVEL SECURITY;
+ALTER TABLE auth.mfa_challenges ENABLE ROW LEVEL SECURITY;
+ALTER TABLE auth.one_time_tokens ENABLE ROW LEVEL SECURITY;
+ALTER TABLE storage.buckets ENABLE ROW LEVEL SECURITY;
+ALTER TABLE storage.objects ENABLE ROW LEVEL SECURITY;
+
+-- Create basic RLS policies
+\echo 'Creating basic RLS policies...'
+
+-- Auth users policies
+CREATE POLICY "Users can view own user data" ON auth.users
+    FOR SELECT USING (auth.uid() = id);
+
+CREATE POLICY "Users can update own user data" ON auth.users
+    FOR UPDATE USING (auth.uid() = id);
+
+-- Storage buckets policies
+CREATE POLICY "Public buckets are viewable by everyone" ON storage.buckets
+    FOR SELECT USING (public = true);
+
+CREATE POLICY "Users can view own buckets" ON storage.buckets
+    FOR SELECT USING (auth.uid() = owner);
+
+-- Storage objects policies
+CREATE POLICY "Public objects are viewable by everyone" ON storage.objects
+    FOR SELECT USING (bucket_id IN (SELECT id FROM storage.buckets WHERE public = true));
+
+CREATE POLICY "Users can view own objects" ON storage.objects
+    FOR SELECT USING (auth.uid() = owner);
+
+CREATE POLICY "Users can insert own objects" ON storage.objects
+    FOR INSERT WITH CHECK (auth.uid() = owner);
+
+CREATE POLICY "Users can update own objects" ON storage.objects
+    FOR UPDATE USING (auth.uid() = owner);
+
+CREATE POLICY "Users can delete own objects" ON storage.objects
+    FOR DELETE USING (auth.uid() = owner);
+
+-- Create helper functions
+\echo 'Creating helper functions...'
+
+-- Function to get current user ID
+CREATE OR REPLACE FUNCTION auth.uid()
+RETURNS UUID
+LANGUAGE SQL STABLE
+AS $$
+    SELECT COALESCE(
+        nullif(current_setting('request.jwt.claim.sub', true), ''),
+        (nullif(current_setting('request.jwt.claims', true), '')::jsonb ->> 'sub')
+    )::uuid
+$$;
+
+-- Function to get current user role
+CREATE OR REPLACE FUNCTION auth.role()
+RETURNS TEXT
+LANGUAGE SQL STABLE
+AS $$
+    SELECT COALESCE(
+        nullif(current_setting('request.jwt.claim.role', true), ''),
+        (nullif(current_setting('request.jwt.claims', true), '')::jsonb ->> 'role')
+    )::text
+$$;
+
+-- Function to get current user email
+CREATE OR REPLACE FUNCTION auth.email()
+RETURNS TEXT
+LANGUAGE SQL STABLE
+AS $$
+    SELECT COALESCE(
+        nullif(current_setting('request.jwt.claim.email', true), ''),
+        (nullif(current_setting('request.jwt.claims', true), '')::jsonb ->> 'email')
+    )::text
+$$;
+
+-- Grant permissions on functions
+GRANT EXECUTE ON FUNCTION auth.uid() TO anon, authenticated, service_role;
+GRANT EXECUTE ON FUNCTION auth.role() TO anon, authenticated, service_role;
+GRANT EXECUTE ON FUNCTION auth.email() TO anon, authenticated, service_role;
+
+-- Insert initial data
+\echo 'Inserting initial data...'
+
+-- Insert default bucket for avatars
+INSERT INTO storage.buckets (id, name, public) 
+VALUES ('avatars', 'avatars', true)
+ON CONFLICT (id) DO NOTHING;
+
+-- Insert default bucket for public files
+INSERT INTO storage.buckets (id, name, public) 
+VALUES ('public', 'public', true)
+ON CONFLICT (id) DO NOTHING;
+
+-- Create a sample user (optional - remove in production)
+-- INSERT INTO auth.users (id, email, encrypted_password, email_confirmed_at, created_at, updated_at, raw_app_meta_data, raw_user_meta_data, is_super_admin)
+-- VALUES (
+--     gen_random_uuid(),
+--     'admin@example.com',
+--     crypt('password123', gen_salt('bf')),
+--     NOW(),
+--     NOW(),
+--     NOW(),
+--     '{"provider": "email", "providers": ["email"]}',
+--     '{"name": "Admin User"}',
+--     false
+-- );
+
+\echo 'Supabase database initialization completed successfully!'
+\echo 'Next steps:'
+\echo '1. Deploy Supabase using: helm install supabase supabase/supabase -f supabase-helm/values-patroni.yaml'
+\echo '2. Configure your application to use the Supabase API'
+\echo '3. Set up proper authentication and authorization rules'

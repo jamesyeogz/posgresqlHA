@@ -1,0 +1,106 @@
+version: '3.9'
+
+# Patroni PostgreSQL HA Cluster with Docker
+# etcd runs in Kubernetes, Patroni+PostgreSQL runs in Docker
+
+services:
+  # Patroni PostgreSQL Node 1 (Primary)
+  patroni-postgres-1:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.patroni
+    container_name: patroni-postgres-1
+    hostname: patroni-postgres-1
+    environment:
+      HOSTNAME: patroni-postgres-1
+      POSTGRES_PASSWORD: password
+      REPLICATION_PASSWORD: password
+      POSTGRES_USER: postgres
+      POSTGRES_DB: postgres
+      ETCD_HOSTS: ${ETCD_HOSTS:-192.168.49.2:32379}
+    ports:
+      - "5432:5432"   # PostgreSQL
+      - "8008:8008"   # Patroni REST API
+    volumes:
+      - patroni_data_1:/home/postgres/pgdata
+      - ./patroni-config:/etc/patroni
+    networks:
+      - patroni-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8008/health || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # Patroni PostgreSQL Node 2 (Replica)
+  patroni-postgres-2:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.patroni
+    container_name: patroni-postgres-2
+    hostname: patroni-postgres-2
+    environment:
+      HOSTNAME: patroni-postgres-2
+      POSTGRES_PASSWORD: password
+      REPLICATION_PASSWORD: password
+      POSTGRES_USER: postgres
+      POSTGRES_DB: postgres
+      ETCD_HOSTS: ${ETCD_HOSTS:-192.168.49.2:32379}
+    ports:
+      - "5433:5432"   # PostgreSQL
+      - "8009:8008"   # Patroni REST API
+    volumes:
+      - patroni_data_2:/home/postgres/pgdata
+      - ./patroni-config:/etc/patroni
+    networks:
+      - patroni-network
+    restart: unless-stopped
+    depends_on:
+      - patroni-postgres-1
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8008/health || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # Patroni PostgreSQL Node 3 (Replica)
+  patroni-postgres-3:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.patroni
+    container_name: patroni-postgres-3
+    hostname: patroni-postgres-3
+    environment:
+      HOSTNAME: patroni-postgres-3
+      POSTGRES_PASSWORD: password
+      REPLICATION_PASSWORD: password
+      POSTGRES_USER: postgres
+      POSTGRES_DB: postgres
+      ETCD_HOSTS: ${ETCD_HOSTS:-192.168.49.2:32379}
+    ports:
+      - "5434:5432"   # PostgreSQL
+      - "8010:8008"   # Patroni REST API
+    volumes:
+      - patroni_data_3:/home/postgres/pgdata
+      - ./patroni-config:/etc/patroni
+    networks:
+      - patroni-network
+    restart: unless-stopped
+    depends_on:
+      - patroni-postgres-1
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8008/health || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+
+volumes:
+  patroni_data_1:
+  patroni_data_2:
+  patroni_data_3:
+
+networks:
+  patroni-network:
+    driver: bridge
