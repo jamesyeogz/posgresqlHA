@@ -11,6 +11,9 @@ data:
     global
         maxconn 100
         log stdout local0
+        # Consul integration
+        stats socket /var/run/haproxy.sock mode 660 level admin
+        stats timeout 30s
 
     defaults
         log global
@@ -31,26 +34,34 @@ data:
         stats realm HAProxy\ Statistics
         stats auth admin:password
 
-    # PostgreSQL Master (Read/Write) - Direct connection to Docker containers via Minikube host
+    # PostgreSQL Master (Read/Write) - Using Consul service discovery
     listen postgres_master
         bind *:5432
         option httpchk GET /master
         http-check expect status 200
         default-server inter 3s fall 3 rise 2 on-marked-down shutdown-sessions
-        server patroni-postgres-1 ${DOCKER_HOST_IP}:5432 maxconn 100 check port 8008
-        server patroni-postgres-2 ${DOCKER_HOST_IP}:5433 maxconn 100 check port 8009
-        server patroni-postgres-3 ${DOCKER_HOST_IP}:5434 maxconn 100 check port 8010
+        # Dynamic server discovery via Consul
+        server-template patroni-postgres- 3 _patroni-postgres._tcp.service.consul:5432 check port 8008 resolvers consul resolve-prefer ipv4
 
-    # PostgreSQL Replicas (Read Only) - Direct connection to Docker containers via Minikube host
+    # PostgreSQL Replicas (Read Only) - Using Consul service discovery
     listen postgres_replicas
         bind *:5001
         option httpchk GET /replica
         http-check expect status 200
         balance roundrobin
         default-server inter 3s fall 3 rise 2 on-marked-down shutdown-sessions
-        server patroni-postgres-1 ${DOCKER_HOST_IP}:5432 maxconn 100 check port 8008
-        server patroni-postgres-2 ${DOCKER_HOST_IP}:5433 maxconn 100 check port 8009
-        server patroni-postgres-3 ${DOCKER_HOST_IP}:5434 maxconn 100 check port 8010
+        # Dynamic server discovery via Consul
+        server-template patroni-postgres- 3 _patroni-postgres._tcp.service.consul:5432 check port 8008 resolvers consul resolve-prefer ipv4
+
+    # Consul resolver configuration
+    resolvers consul
+        nameserver consul-ui.consul.svc.cluster.local 8600:53
+        accepted_payload_size 8192
+        hold other 30s
+        hold refused 30s
+        hold nx 30s
+        hold timeout 30s
+        hold valid 10s
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -70,60 +81,57 @@ spec:
         app: haproxy
     spec:
       initContainers:
-      - name: setup-config
-        image: busybox:1.35
-        command: ['sh', '-c']
-        args:
-        - |
-          # Get the Docker host IP (Minikube host IP)
-          DOCKER_HOST_IP=$(getent hosts host.minikube.internal | awk '{ print $1 }' || echo "192.168.49.1")
-          echo "Using Docker host IP: $DOCKER_HOST_IP"
-          # Replace environment variables in haproxy config
-          sed "s/\${DOCKER_HOST_IP}/$DOCKER_HOST_IP/g" /tmp/haproxy-template/haproxy.cfg > /tmp/haproxy-config/haproxy.cfg
-          cat /tmp/haproxy-config/haproxy.cfg
-        volumeMounts:
-        - name: haproxy-config-template
-          mountPath: /tmp/haproxy-template
-        - name: haproxy-config-processed
-          mountPath: /tmp/haproxy-config
+        - name: setup-config
+          image: busybox:1.35
+          command: ["sh", "-c"]
+          args:
+            - |
+              echo "HAProxy configuration ready for Consul service discovery"
+              cp /tmp/haproxy-template/haproxy.cfg /tmp/haproxy-config/haproxy.cfg
+              cat /tmp/haproxy-config/haproxy.cfg
+          volumeMounts:
+            - name: haproxy-config-template
+              mountPath: /tmp/haproxy-template
+            - name: haproxy-config-processed
+              mountPath: /tmp/haproxy-config
       containers:
-      - name: haproxy
-        image: haproxy:2.8-alpine
-        ports:
-        - containerPort: 5001
-          name: pg-replica
-        - containerPort: 5432
-          name: postgres
-        - containerPort: 7000
-          name: stats
-        volumeMounts:
-        - name: haproxy-config-processed
-          mountPath: /usr/local/etc/haproxy
-        resources:
-          requests:
-            memory: "128Mi"
-            cpu: "100m"
-          limits:
-            memory: "256Mi"
-            cpu: "200m"
-        livenessProbe:
-          httpGet:
-            path: /
-            port: 7000
-          initialDelaySeconds: 30
-          periodSeconds: 10
-        readinessProbe:
-          httpGet:
-            path: /
-            port: 7000
-          initialDelaySeconds: 5
-          periodSeconds: 5
+        - name: haproxy
+          image: haproxy:2.8-alpine
+          ports:
+            - containerPort: 5001
+              name: pg-replica
+            - containerPort: 5432
+              name: postgres
+            - containerPort: 7000
+              name: stats
+          volumeMounts:
+            - name: haproxy-config-processed
+              mountPath: /usr/local/etc/haproxy
+          resources:
+            requests:
+              memory: "128Mi"
+              cpu: "100m"
+            limits:
+              memory: "256Mi"
+              cpu: "200m"
+          livenessProbe:
+            httpGet:
+              path: /
+              port: 7000
+            initialDelaySeconds: 30
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /
+              port: 7000
+            initialDelaySeconds: 5
+            periodSeconds: 5
       volumes:
-      - name: haproxy-config-template
-        configMap:
-          name: haproxy-config
-      - name: haproxy-config-processed
-        emptyDir: {}
+        - name: haproxy-config-template
+          configMap:
+            name: haproxy-config
+        - name: haproxy-config-processed
+          emptyDir: {}
 ---
 apiVersion: v1
 kind: Service
@@ -136,15 +144,15 @@ spec:
   selector:
     app: haproxy
   ports:
-  - port: 5432
-    targetPort: 5432
-    name: postgres
-  - port: 5001
-    targetPort: 5001
-    name: pg-replica
-  - port: 7000
-    targetPort: 7000
-    name: stats
+    - port: 5432
+      targetPort: 5432
+      name: postgres
+    - port: 5001
+      targetPort: 5001
+      name: pg-replica
+    - port: 7000
+      targetPort: 7000
+      name: stats
 ---
 # Service for PostgreSQL Master (Read/Write)
 apiVersion: v1
@@ -159,9 +167,9 @@ spec:
   selector:
     app: haproxy
   ports:
-  - port: 5432
-    targetPort: 5432
-    name: postgres
+    - port: 5432
+      targetPort: 5432
+      name: postgres
 ---
 # Service for PostgreSQL Replicas (Read Only)
 apiVersion: v1
@@ -176,9 +184,9 @@ spec:
   selector:
     app: haproxy
   ports:
-  - port: 5432
-    targetPort: 5001
-    name: postgres
+    - port: 5432
+      targetPort: 5001
+      name: postgres
 ---
 # HAProxy Stats Service
 apiVersion: v1
@@ -192,6 +200,36 @@ spec:
   selector:
     app: haproxy
   ports:
-  - port: 7000
-    targetPort: 7000
-    name: stats
+    - port: 7000
+      targetPort: 7000
+      name: stats
+---
+# HAProxy LoadBalancer Service for Production
+apiVersion: v1
+kind: Service
+metadata:
+  name: haproxy-loadbalancer
+  namespace: hapostgresql
+  labels:
+    app: haproxy
+  annotations:
+    # Cloud provider specific annotations (optional)
+    # service.beta.kubernetes.io/aws-load-balancer-type: "nlb"  # AWS Network LB
+    # cloud.google.com/load-balancer-type: "External"           # GCP External LB
+spec:
+  type: LoadBalancer
+  selector:
+    app: haproxy
+  ports:
+    - port: 5432
+      targetPort: 5432
+      protocol: TCP
+      name: postgres
+    - port: 5001
+      targetPort: 5001
+      protocol: TCP
+      name: pg-replica
+    - port: 7000
+      targetPort: 7000
+      protocol: TCP
+      name: stats

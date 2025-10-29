@@ -1,19 +1,98 @@
 -- Supabase Database Initialization Script
 -- Run this script on your Patroni PostgreSQL cluster before deploying Supabase
--- Usage: psql -h localhost -p 5432 -U postgres -f scripts/init-supabase-db.sql
+-- Usage: psql -h <host> -p <port> -U <username> -d <database> -f scripts/init-supabase-db.sql
+-- 
+-- For external agents' PostgreSQL databases:
+-- psql -h <agent-host> -p <agent-port> -U <agent-username> -d <agent-database> -f scripts/init-supabase-db.sql
 
 \echo 'Starting Supabase database initialization...'
 
+-- Check if we're connected to a valid PostgreSQL database
+\echo 'Verifying database connection...'
+SELECT version();
+
 -- Create required extensions
 \echo 'Creating extensions...'
+
+-- Check if required extensions are available
+DO $$
+DECLARE
+    missing_extensions TEXT[] := ARRAY[]::TEXT[];
+    ext TEXT;
+    required_extensions TEXT[] := ARRAY[
+        'uuid-ossp', 'pgcrypto', 'pg_stat_statements'
+    ];
+    optional_extensions TEXT[] := ARRAY[
+        'pgjwt', 'pg_graphql', 'pg_jsonschema', 'wrappers', 'vault'
+    ];
+BEGIN
+    -- Check required extensions
+    FOREACH ext IN ARRAY required_extensions
+    LOOP
+        IF NOT EXISTS (
+            SELECT 1 FROM pg_available_extensions 
+            WHERE name = ext
+        ) THEN
+            missing_extensions := array_append(missing_extensions, ext);
+        END IF;
+    END LOOP;
+    
+    -- Check optional extensions
+    FOREACH ext IN ARRAY optional_extensions
+    LOOP
+        IF NOT EXISTS (
+            SELECT 1 FROM pg_available_extensions 
+            WHERE name = ext
+        ) THEN
+            RAISE WARNING 'Optional extension % is not available', ext;
+        END IF;
+    END LOOP;
+    
+    IF array_length(missing_extensions, 1) > 0 THEN
+        RAISE EXCEPTION 'Required extensions are missing: %', array_to_string(missing_extensions, ', ');
+    END IF;
+END
+$$;
+
+-- Install required extensions
 CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
 CREATE EXTENSION IF NOT EXISTS "pgcrypto";
-CREATE EXTENSION IF NOT EXISTS "pgjwt";
 CREATE EXTENSION IF NOT EXISTS "pg_stat_statements";
-CREATE EXTENSION IF NOT EXISTS "pg_graphql";
-CREATE EXTENSION IF NOT EXISTS "pg_jsonschema";
-CREATE EXTENSION IF NOT EXISTS "wrappers";
-CREATE EXTENSION IF NOT EXISTS "vault";
+
+-- Install optional extensions (with error handling)
+DO $$
+BEGIN
+    BEGIN
+        CREATE EXTENSION IF NOT EXISTS "pgjwt";
+    EXCEPTION WHEN OTHERS THEN
+        RAISE WARNING 'Failed to create pgjwt extension: %', SQLERRM;
+    END;
+    
+    BEGIN
+        CREATE EXTENSION IF NOT EXISTS "pg_graphql";
+    EXCEPTION WHEN OTHERS THEN
+        RAISE WARNING 'Failed to create pg_graphql extension: %', SQLERRM;
+    END;
+    
+    BEGIN
+        CREATE EXTENSION IF NOT EXISTS "pg_jsonschema";
+    EXCEPTION WHEN OTHERS THEN
+        RAISE WARNING 'Failed to create pg_jsonschema extension: %', SQLERRM;
+    END;
+    
+    BEGIN
+        CREATE EXTENSION IF NOT EXISTS "wrappers";
+    EXCEPTION WHEN OTHERS THEN
+        RAISE WARNING 'Failed to create wrappers extension: %', SQLERRM;
+    END;
+    
+    BEGIN
+        CREATE EXTENSION IF NOT EXISTS "vault";
+    EXCEPTION WHEN OTHERS THEN
+        RAISE WARNING 'Failed to create vault extension: %', SQLERRM;
+    END;
+END
+$$;
 
 -- Create Supabase schemas
 \echo 'Creating schemas...'
@@ -30,34 +109,34 @@ CREATE SCHEMA IF NOT EXISTS vault;
 -- Create roles
 \echo 'Creating roles...'
 DO $$
+DECLARE
+    role_name TEXT;
+    required_roles TEXT[] := ARRAY[
+        'anon', 'authenticated', 'service_role', 'supabase_admin',
+        'supabase_auth_admin', 'supabase_storage_admin', 'dashboard_user'
+    ];
 BEGIN
-    IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'anon') THEN
-        CREATE ROLE anon NOLOGIN;
+    -- Check if current user has CREATEROLE privilege
+    IF NOT (
+        SELECT rolcreaterole FROM pg_roles WHERE rolname = current_user
+    ) THEN
+        RAISE WARNING 'Current user % does not have CREATEROLE privilege. Some roles may not be created.', current_user;
     END IF;
     
-    IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'authenticated') THEN
-        CREATE ROLE authenticated NOLOGIN;
-    END IF;
-    
-    IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'service_role') THEN
-        CREATE ROLE service_role NOLOGIN;
-    END IF;
-    
-    IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'supabase_admin') THEN
-        CREATE ROLE supabase_admin NOLOGIN;
-    END IF;
-    
-    IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'supabase_auth_admin') THEN
-        CREATE ROLE supabase_auth_admin NOLOGIN;
-    END IF;
-    
-    IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'supabase_storage_admin') THEN
-        CREATE ROLE supabase_storage_admin NOLOGIN;
-    END IF;
-    
-    IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'dashboard_user') THEN
-        CREATE ROLE dashboard_user NOLOGIN;
-    END IF;
+    -- Create required roles
+    FOREACH role_name IN ARRAY required_roles
+    LOOP
+        BEGIN
+            IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = role_name) THEN
+                EXECUTE format('CREATE ROLE %I NOLOGIN', role_name);
+                RAISE NOTICE 'Created role: %', role_name;
+            ELSE
+                RAISE NOTICE 'Role % already exists', role_name;
+            END IF;
+        EXCEPTION WHEN OTHERS THEN
+            RAISE WARNING 'Failed to create role %: %', role_name, SQLERRM;
+        END;
+    END LOOP;
 END
 $$;
 
@@ -443,8 +522,73 @@ ON CONFLICT (id) DO NOTHING;
 --     false
 -- );
 
+-- Final validation
+\echo 'Performing final validation...'
+
+DO $$
+DECLARE
+    validation_errors TEXT[] := ARRAY[]::TEXT[];
+    error_msg TEXT;
+BEGIN
+    -- Check if all required schemas exist
+    IF NOT EXISTS (SELECT 1 FROM information_schema.schemata WHERE schema_name = 'auth') THEN
+        validation_errors := array_append(validation_errors, 'auth schema missing');
+    END IF;
+    
+    IF NOT EXISTS (SELECT 1 FROM information_schema.schemata WHERE schema_name = 'storage') THEN
+        validation_errors := array_append(validation_errors, 'storage schema missing');
+    END IF;
+    
+    -- Check if all required roles exist
+    IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'anon') THEN
+        validation_errors := array_append(validation_errors, 'anon role missing');
+    END IF;
+    
+    IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'authenticated') THEN
+        validation_errors := array_append(validation_errors, 'authenticated role missing');
+    END IF;
+    
+    IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'service_role') THEN
+        validation_errors := array_append(validation_errors, 'service_role role missing');
+    END IF;
+    
+    -- Check if critical tables exist
+    IF NOT EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema = 'auth' AND table_name = 'users') THEN
+        validation_errors := array_append(validation_errors, 'auth.users table missing');
+    END IF;
+    
+    IF NOT EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema = 'storage' AND table_name = 'buckets') THEN
+        validation_errors := array_append(validation_errors, 'storage.buckets table missing');
+    END IF;
+    
+    -- Check if required extensions are installed
+    IF NOT EXISTS (SELECT 1 FROM pg_extension WHERE extname = 'uuid-ossp') THEN
+        validation_errors := array_append(validation_errors, 'uuid-ossp extension not installed');
+    END IF;
+    
+    IF NOT EXISTS (SELECT 1 FROM pg_extension WHERE extname = 'pgcrypto') THEN
+        validation_errors := array_append(validation_errors, 'pgcrypto extension not installed');
+    END IF;
+    
+    -- Report validation results
+    IF array_length(validation_errors, 1) > 0 THEN
+        RAISE EXCEPTION 'Validation failed: %', array_to_string(validation_errors, ', ');
+    ELSE
+        RAISE NOTICE 'All validations passed successfully!';
+    END IF;
+END
+$$;
+
 \echo 'Supabase database initialization completed successfully!'
+\echo 'Database Information:'
+\echo '  Host: %HOSTNAME%'
+\echo '  Port: %PORT%'
+\echo '  Database: %DATABASE%'
+\echo '  User: %USER%'
+\echo ''
 \echo 'Next steps:'
-\echo '1. Deploy Supabase using: helm install supabase supabase/supabase -f supabase-helm/values-patroni.yaml'
-\echo '2. Configure your application to use the Supabase API'
-\echo '3. Set up proper authentication and authorization rules'
+\echo '1. Configure your Supabase services to connect to this database'
+\echo '2. Update connection strings in your Supabase configuration'
+\echo '3. Test the connection with: psql -h <host> -p <port> -U <user> -d <database> -c "SELECT 1;"'
+\echo '4. Deploy Supabase services pointing to this database'
+\echo '5. Set up proper authentication and authorization rules'

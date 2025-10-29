@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # Patroni PostgreSQL HA Cluster with Supabase Setup Script
-# This script automates the deployment of the entire stack
+# This script automates the deployment of the entire stack with Consul
 
 set -e
 
@@ -104,33 +104,46 @@ start_minikube() {
     MINIKUBE_IP=$(minikube ip)
     print_status "Minikube IP: $MINIKUBE_IP"
     
-    # Update docker-compose.yml with correct etcd endpoint
+    # Update docker-compose files with correct Consul endpoint
     if [[ "$OSTYPE" == "darwin"* ]]; then
         # macOS
-        sed -i '' "s/ETCD_HOSTS: \${ETCD_HOSTS:-.*}/ETCD_HOSTS: \${ETCD_HOSTS:-$MINIKUBE_IP:32379}/g" docker-compose.yml
+        for vm in vm1 vm2 vm3; do
+            if [ -f "docker-compose.$vm.yml" ]; then
+                sed -i '' "s/CONSUL_HOST: \${CONSUL_HOST:-.*}/CONSUL_HOST: \${CONSUL_HOST:-$MINIKUBE_IP:32500}/g" docker-compose.$vm.yml
+            fi
+        done
     else
         # Linux
-        sed -i "s/ETCD_HOSTS: \${ETCD_HOSTS:-.*}/ETCD_HOSTS: \${ETCD_HOSTS:-$MINIKUBE_IP:32379}/g" docker-compose.yml
+        for vm in vm1 vm2 vm3; do
+            if [ -f "docker-compose.$vm.yml" ]; then
+                sed -i "s/CONSUL_HOST: \${CONSUL_HOST:-.*}/CONSUL_HOST: \${CONSUL_HOST:-$MINIKUBE_IP:32500}/g" docker-compose.$vm.yml
+            fi
+        done
     fi
     
-    print_success "Updated docker-compose.yml with Minikube IP"
+    print_success "Updated docker-compose files with Minikube IP"
 }
 
-# Deploy etcd cluster
-deploy_etcd() {
-    print_status "Deploying etcd cluster..."
+# Deploy Consul cluster
+deploy_consul() {
+    print_status "Deploying Consul cluster..."
     
-    kubectl apply -f k8s/etcd-cluster.yaml
+    kubectl apply -f k8s/consul-cluster.yaml
     
-    # Wait for etcd pods to be ready
-    wait_for_pods "app=etcd" "default" 300
+    # Wait for Consul pods to be ready
+    wait_for_pods "app=consul" "default" 300
     
-    print_success "etcd cluster deployed successfully"
+    print_success "Consul cluster deployed successfully"
     
-    # Verify etcd cluster health
-    print_status "Verifying etcd cluster health..."
-    kubectl exec etcd-0 -- etcdctl endpoint health --endpoints=http://localhost:2379
-    print_success "etcd cluster is healthy"
+    # Verify Consul cluster health
+    print_status "Verifying Consul cluster health..."
+    kubectl exec consul-0 -- consul members
+    print_success "Consul cluster is healthy"
+    
+    # Show Consul UI access
+    print_status "Consul UI will be available at:"
+    echo "  kubectl port-forward svc/consul-ui 8500:8500"
+    echo "  Then open http://localhost:8500 in your browser"
 }
 
 # Deploy HAProxy
@@ -145,7 +158,7 @@ deploy_haproxy() {
     print_success "HAProxy deployed successfully"
 }
 
-# Build and deploy Patroni cluster
+# Build and deploy Patroni cluster (Per-VM)
 deploy_patroni() {
     print_status "Building Patroni Docker image..."
     
@@ -153,32 +166,40 @@ deploy_patroni() {
     
     print_success "Patroni Docker image built successfully"
     
-    print_status "Starting Patroni PostgreSQL cluster..."
+    print_status "Starting Patroni PostgreSQL cluster on all VMs..."
     
-    docker-compose up -d
+    # Deploy on each VM
+    for vm in vm1 vm2 vm3; do
+        if [ -f "docker-compose.$vm.yml" ]; then
+            print_status "Deploying on VM $vm..."
+            docker-compose -f docker-compose.$vm.yml up -d
+            
+            # Wait for container to be healthy
+            sleep 10
+            
+            if docker-compose -f docker-compose.$vm.yml ps | grep -q "Up"; then
+                print_success "Patroni on VM $vm started successfully"
+            else
+                print_error "Failed to start Patroni on VM $vm"
+                docker-compose -f docker-compose.$vm.yml logs
+                exit 1
+            fi
+        else
+            print_warning "docker-compose.$vm.yml not found, skipping VM $vm"
+        fi
+    done
     
-    # Wait for containers to be healthy
-    print_status "Waiting for Patroni containers to be healthy..."
-    sleep 30
-    
-    # Check if containers are running
-    if docker-compose ps | grep -q "Up"; then
-        print_success "Patroni PostgreSQL cluster started successfully"
-    else
-        print_error "Failed to start Patroni PostgreSQL cluster"
-        docker-compose logs
-        exit 1
-    fi
-    
-    # Wait a bit more for cluster to form
+    # Wait for cluster to form
+    print_status "Waiting for Patroni cluster to form..."
     sleep 60
     
     # Check cluster status
     print_status "Checking Patroni cluster status..."
-    if docker exec patroni-postgres-1 patronictl list 2>/dev/null; then
+    if docker exec patroni-postgres-vm1 patronictl list 2>/dev/null; then
         print_success "Patroni cluster is running and healthy"
     else
-        print_warning "Patroni cluster might still be initializing. Check logs with: docker-compose logs"
+        print_warning "Patroni cluster might still be initializing. Check logs with:"
+        echo "  docker-compose -f docker-compose.vm1.yml logs"
     fi
 }
 
@@ -186,17 +207,17 @@ deploy_patroni() {
 init_supabase_db() {
     print_status "Initializing Supabase database schema..."
     
-    # Wait for PostgreSQL to be ready
-    print_status "Waiting for PostgreSQL to be ready..."
+    # Wait for PostgreSQL to be ready on primary VM
+    print_status "Waiting for PostgreSQL to be ready on VM1..."
     for i in {1..30}; do
-        if docker exec patroni-postgres-1 pg_isready -U postgres >/dev/null 2>&1; then
+        if docker exec patroni-postgres-vm1 pg_isready -U postgres >/dev/null 2>&1; then
             break
         fi
         sleep 5
     done
     
     # Run the initialization script
-    if docker exec -i patroni-postgres-1 psql -U postgres < scripts/init-supabase-db.sql; then
+    if docker exec -i patroni-postgres-vm1 psql -U postgres < scripts/init-supabase-db.sql; then
         print_success "Supabase database schema initialized successfully"
     else
         print_error "Failed to initialize Supabase database schema"
@@ -268,17 +289,20 @@ show_access_info() {
     echo "  Command: kubectl port-forward svc/supabase-kong 8000:8000"
     echo
     
-    echo -e "${GREEN}etcd Cluster:${NC}"
-    echo "  Endpoint: $MINIKUBE_IP:32379"
-    echo "  Health Check: kubectl exec etcd-0 -- etcdctl endpoint health"
+    echo -e "${GREEN}Consul Cluster:${NC}"
+    echo "  Endpoint: $MINIKUBE_IP:32500"
+    echo "  UI: http://localhost:8500"
+    echo "  Command: kubectl port-forward svc/consul-ui 8500:8500"
+    echo "  Health Check: kubectl exec consul-0 -- consul members"
     echo
     
     print_status "Useful Commands:"
-    echo "  Check Patroni cluster: docker exec patroni-postgres-1 patronictl list"
+    echo "  Check Patroni cluster: docker exec patroni-postgres-vm1 patronictl list"
     echo "  Check Kubernetes pods: kubectl get pods"
+    echo "  Check Consul services: kubectl exec consul-0 -- consul catalog services"
     echo "  Check Supabase services: kubectl get svc -l app.kubernetes.io/name=supabase"
-    echo "  View logs: docker-compose logs -f"
-    echo "  Stop everything: docker-compose down && kubectl delete -f k8s/"
+    echo "  View logs (VM1): docker-compose -f docker-compose.vm1.yml logs -f"
+    echo "  Stop everything: for vm in vm1 vm2 vm3; do docker-compose -f docker-compose.$vm.yml down; done && kubectl delete -f k8s/"
 }
 
 # Main execution
@@ -291,7 +315,7 @@ main() {
     # Parse command line arguments
     SKIP_PREREQUISITES=false
     SKIP_MINIKUBE=false
-    SKIP_ETCD=false
+    SKIP_CONSUL=false
     SKIP_HAPROXY=false
     SKIP_PATRONI=false
     SKIP_SUPABASE_DB=false
@@ -307,8 +331,8 @@ main() {
                 SKIP_MINIKUBE=true
                 shift
                 ;;
-            --skip-etcd)
-                SKIP_ETCD=true
+            --skip-consul)
+                SKIP_CONSUL=true
                 shift
                 ;;
             --skip-haproxy)
@@ -332,7 +356,7 @@ main() {
                 echo "Options:"
                 echo "  --skip-prerequisites  Skip prerequisite checks"
                 echo "  --skip-minikube      Skip Minikube setup"
-                echo "  --skip-etcd          Skip etcd deployment"
+                echo "  --skip-consul       Skip Consul deployment"
                 echo "  --skip-haproxy       Skip HAProxy deployment"
                 echo "  --skip-patroni       Skip Patroni deployment"
                 echo "  --skip-supabase-db   Skip Supabase database initialization"
@@ -356,8 +380,8 @@ main() {
         start_minikube
     fi
     
-    if [ "$SKIP_ETCD" = false ]; then
-        deploy_etcd
+    if [ "$SKIP_CONSUL" = false ]; then
+        deploy_consul
     fi
     
     if [ "$SKIP_HAPROXY" = false ]; then

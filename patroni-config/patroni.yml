@@ -6,8 +6,13 @@ restapi:
   listen: 0.0.0.0:8008
   connect_address: ${HOSTNAME}:8008
 
-etcd:
-  hosts: ${ETCD_HOSTS}
+consul:
+  host: ${CONSUL_HOST:-consul-agent:8500}
+  port: 8500
+  scheme: http
+  verify: false
+  checks: []
+  register_service: true
 
 bootstrap:
   dcs:
@@ -22,7 +27,7 @@ bootstrap:
       use_slots: true
       parameters:
         max_connections: 200
-        shared_preload_libraries: 'pg_stat_statements'
+        shared_preload_libraries: "pg_stat_statements"
         wal_level: replica
         hot_standby: "on"
         wal_keep_segments: 8
@@ -32,27 +37,27 @@ bootstrap:
         archive_mode: "on"
         archive_timeout: 1800s
         archive_command: mkdir -p ../wal_archive && test ! -f ../wal_archive/%f && cp %p ../wal_archive/%f
-        logging_collector: 'on'
-        log_destination: 'stderr'
-        log_directory: '/home/postgres/pgdata/pgroot/pg_log'
-        log_filename: 'postgresql-%a.log'
-        log_truncate_on_rotation: 'on'
-        log_rotation_age: '1d'
+        logging_collector: "on"
+        log_destination: "stderr"
+        log_directory: "/home/postgres/pgdata/pgroot/pg_log"
+        log_filename: "postgresql-%a.log"
+        log_truncate_on_rotation: "on"
+        log_rotation_age: "1d"
         log_min_duration_statement: 1000
-        log_checkpoints: 'on'
-        log_connections: 'on'
-        log_disconnections: 'on'
-        log_lock_waits: 'on'
+        log_checkpoints: "on"
+        log_connections: "on"
+        log_disconnections: "on"
+        log_lock_waits: "on"
         log_temp_files: 0
         log_autovacuum_min_duration: 0
         log_error_verbosity: default
   initdb:
-  - encoding: UTF8
-  - data-checksums
+    - encoding: UTF8
+    - data-checksums
   pg_hba:
-  - host replication replicator 127.0.0.1/32 md5
-  - host replication replicator 0.0.0.0/0 md5
-  - host all all 0.0.0.0/0 md5
+    - host replication replicator 127.0.0.1/32 md5
+    - host replication replicator 0.0.0.0/0 md5
+    - host all all 0.0.0.0/0 md5
   users:
     admin:
       password: ${POSTGRES_PASSWORD}
@@ -81,7 +86,7 @@ postgresql:
       username: replicator
       password: ${REPLICATION_PASSWORD}
   parameters:
-    unix_socket_directories: '/var/run/postgresql'
+    unix_socket_directories: "/var/run/postgresql"
 
 tags:
   nofailover: false

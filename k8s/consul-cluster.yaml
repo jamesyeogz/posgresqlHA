@@ -1,0 +1,199 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: consul
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: consul-headless
+  namespace: consul
+  labels:
+    app: consul
+spec:
+  clusterIP: None
+  ports:
+    - port: 8500
+      name: http
+    - port: 8300
+      name: server-rpc
+    - port: 8301
+      name: serf-lan
+    - port: 8302
+      name: serf-wan
+    - port: 8600
+      name: dns
+  selector:
+    app: consul
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: consul-ui
+  namespace: consul
+  labels:
+    app: consul
+spec:
+  type: ClusterIP
+  ports:
+    - port: 8500
+      name: http
+      targetPort: 8500
+  selector:
+    app: consul
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: consul-nodeport
+  namespace: consul
+  labels:
+    app: consul
+spec:
+  type: NodePort
+  ports:
+    - port: 8500
+      name: http
+      targetPort: 8500
+      nodePort: 32500
+    - port: 8300
+      name: server-rpc
+      targetPort: 8300
+      nodePort: 32300
+    - port: 8301
+      name: serf-lan
+      targetPort: 8301
+      nodePort: 32301
+    - port: 8302
+      name: serf-wan
+      targetPort: 8302
+      nodePort: 32302
+    - port: 8600
+      name: dns
+      targetPort: 8600
+      nodePort: 32600
+  selector:
+    app: consul
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: consul-config
+  namespace: consul
+data:
+  consul.json: |
+    {
+      "datacenter": "dc1",
+      "data_dir": "/consul/data",
+      "log_level": "INFO",
+      "node_name": "consul",
+      "server": true,
+      "bootstrap_expect": 3,
+      "retry_join": ["consul-headless.consul.svc.cluster.local"],
+      "ui_config": {
+        "enabled": true
+      },
+      "connect": {
+        "enabled": true
+      },
+      "ports": {
+        "grpc": 8502
+      },
+      "acl": {
+        "enabled": false
+      }
+    }
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: consul
+  namespace: consul
+  labels:
+    app: consul
+spec:
+  serviceName: consul-headless
+  replicas: 3
+  selector:
+    matchLabels:
+      app: consul
+  template:
+    metadata:
+      labels:
+        app: consul
+    spec:
+      containers:
+        - name: consul
+          image: consul:1.16
+          ports:
+            - containerPort: 8500
+              name: http
+            - containerPort: 8300
+              name: server-rpc
+            - containerPort: 8301
+              name: serf-lan
+            - containerPort: 8302
+              name: serf-wan
+            - containerPort: 8600
+              name: dns
+            - containerPort: 8502
+              name: grpc
+          env:
+            - name: POD_IP
+              valueFrom:
+                fieldRef:
+                  fieldPath: status.podIP
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+          command:
+            - consul
+            - agent
+            - -config-file=/consul/config/consul.json
+            - -bind=$(POD_IP)
+            - -client=0.0.0.0
+            - -advertise=$(POD_IP)
+            - -retry-join=consul-headless.consul.svc.cluster.local
+            - -domain=consul
+            - -datacenter=dc1
+            - -data-dir=/consul/data
+            - -ui
+            - -server
+            - -bootstrap-expect=3
+          volumeMounts:
+            - name: consul-config
+              mountPath: /consul/config
+            - name: consul-data
+              mountPath: /consul/data
+          livenessProbe:
+            httpGet:
+              path: /v1/status/leader
+              port: 8500
+            initialDelaySeconds: 30
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /v1/status/leader
+              port: 8500
+            initialDelaySeconds: 5
+            periodSeconds: 5
+          resources:
+            requests:
+              memory: "256Mi"
+              cpu: "100m"
+            limits:
+              memory: "512Mi"
+              cpu: "500m"
+      volumes:
+        - name: consul-config
+          configMap:
+            name: consul-config
+  volumeClaimTemplates:
+    - metadata:
+        name: consul-data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: 1Gi

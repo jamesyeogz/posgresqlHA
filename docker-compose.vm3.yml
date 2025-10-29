@@ -1,0 +1,79 @@
+version: "3.9"
+
+services:
+  consul-agent:
+    image: consul:1.16
+    container_name: consul-agent-vm3
+    restart: unless-stopped
+    ports:
+      - "8502:8500" # Different host port to avoid conflicts
+      - "8306:8300" # Different host port for server RPC
+      - "8307:8301" # Different host port for Serf LAN
+      - "8308:8302" # Different host port for Serf WAN
+    environment:
+      - CONSUL_BIND_INTERFACE=eth0
+      - CONSUL_CLIENT_INTERFACE=eth0
+      - CONSUL_DATACENTER=dc1
+      - CONSUL_SERVER=false
+      - CONSUL_RETRY_JOIN=consul-server-0.consul-server.default.svc.cluster.local:8301
+      - CONSUL_RETRY_JOIN=consul-server-1.consul-server.default.svc.cluster.local:8301
+      - CONSUL_RETRY_JOIN=consul-server-2.consul-server.default.svc.cluster.local:8301
+    volumes:
+      - consul-data-vm3:/consul/data
+      - consul-config-vm3:/consul/config
+    networks:
+      - patroni-network
+    healthcheck:
+      test: ["CMD", "consul", "members"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+  patroni-postgres:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.patroni
+    container_name: patroni-postgres-vm3
+    restart: unless-stopped
+    ports:
+      - "5434:5432" # PostgreSQL port (different from VM1 and VM2)
+      - "8010:8008" # Patroni API port (different from VM1 and VM2)
+    environment:
+      - HOSTNAME=patroni-postgres-vm3
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
+      - REPLICATION_PASSWORD=${REPLICATION_PASSWORD}
+      - CONSUL_HOST=consul-agent:8500
+      - CONSUL_DATACENTER=dc1
+      - CONSUL_ACL_TOKEN=${CONSUL_ACL_TOKEN:-}
+    volumes:
+      - patroni-data-vm3:/home/postgres/pgdata
+      - patroni-config:/etc/patroni
+    networks:
+      - patroni-network
+    depends_on:
+      consul-agent:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "patronictl", "list"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+
+volumes:
+  consul-data-vm3:
+    driver: local
+  consul-config-vm3:
+    driver: local
+  patroni-data-vm3:
+    driver: local
+  patroni-config:
+    driver: local
+
+networks:
+  patroni-network:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.22.0.0/16
