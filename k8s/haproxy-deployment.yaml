@@ -53,9 +53,13 @@ data:
         # Dynamic server discovery via Consul
         server-template patroni-postgres- 3 _patroni-postgres._tcp.service.consul:5432 check port 8008 resolvers consul resolve-prefer ipv4
 
-    # Consul resolver configuration
+    # Consul resolver configuration (uses Consul agents running on Docker VMs)
+    # Configure env vars CONSUL_DNS1/2/3 with reachable IP:PORT of Consul DNS
     resolvers consul
-        nameserver consul-ui.consul.svc.cluster.local 8600:53
+        # Example values provided via Deployment env: 10.0.0.11:8600, 10.0.0.12:8601, 10.0.0.13:8602
+        nameserver consul1 ${CONSUL_DNS1}
+        nameserver consul2 ${CONSUL_DNS2}
+        nameserver consul3 ${CONSUL_DNS3}
         accepted_payload_size 8192
         hold other 30s
         hold refused 30s
@@ -86,9 +90,16 @@ spec:
           command: ["sh", "-c"]
           args:
             - |
-              echo "HAProxy configuration ready for Consul service discovery"
-              cp /tmp/haproxy-template/haproxy.cfg /tmp/haproxy-config/haproxy.cfg
-              cat /tmp/haproxy-config/haproxy.cfg
+              echo "Rendering HAProxy configuration with Consul agent DNS endpoints" 
+              export CONSUL_DNS1=${CONSUL_DNS1:-""}
+              export CONSUL_DNS2=${CONSUL_DNS2:-""}
+              export CONSUL_DNS3=${CONSUL_DNS3:-""}
+              sed \
+                -e "s#\${CONSUL_DNS1}#${CONSUL_DNS1}#g" \
+                -e "s#\${CONSUL_DNS2}#${CONSUL_DNS2}#g" \
+                -e "s#\${CONSUL_DNS3}#${CONSUL_DNS3}#g" \
+                /tmp/haproxy-template/haproxy.cfg > /tmp/haproxy-config/haproxy.cfg
+              echo "Final haproxy.cfg:" && cat /tmp/haproxy-config/haproxy.cfg
           volumeMounts:
             - name: haproxy-config-template
               mountPath: /tmp/haproxy-template
@@ -107,6 +118,13 @@ spec:
           volumeMounts:
             - name: haproxy-config-processed
               mountPath: /usr/local/etc/haproxy
+          env:
+            - name: CONSUL_DNS1
+              value: ""
+            - name: CONSUL_DNS2
+              value: ""
+            - name: CONSUL_DNS3
+              value: ""
           resources:
             requests:
               memory: "128Mi"

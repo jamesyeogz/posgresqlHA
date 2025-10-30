@@ -10,11 +10,11 @@ RUN apt-get update && apt-get install -y \
     jq \
     && rm -rf /var/lib/apt/lists/*
 
-# Install Patroni
+# Install Patroni with Consul support
 RUN pip3 install --no-cache-dir --break-system-packages \
-    patroni[etcd] \
+    patroni[consul] \
     psycopg2-binary \
-    python-etcd
+    python-consul
 
 # Create postgres user and directories
 RUN mkdir -p /home/postgres/pgdata/pgroot/data \

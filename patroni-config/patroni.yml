@@ -4,7 +4,7 @@ name: ${HOSTNAME}
 
 restapi:
   listen: 0.0.0.0:8008
-  connect_address: ${HOSTNAME}:8008
+  connect_address: ${RESTAPI_CONNECT_ADDRESS:-${HOSTNAME}:8008}
 
 consul:
   host: ${CONSUL_HOST:-consul-agent:8500}
@@ -54,6 +54,7 @@ bootstrap:
   initdb:
     - encoding: UTF8
     - data-checksums
+  post_init: psql -U postgres -d postgres -f /scripts/init-supabase-db.sql
   pg_hba:
     - host replication replicator 127.0.0.1/32 md5
     - host replication replicator 0.0.0.0/0 md5
@@ -71,7 +72,7 @@ bootstrap:
 
 postgresql:
   listen: 0.0.0.0:5432
-  connect_address: ${HOSTNAME}:5432
+  connect_address: ${CONNECT_ADDRESS:-${HOSTNAME}:5432}
   data_dir: /home/postgres/pgdata/pgroot/data
   bin_dir: /usr/lib/postgresql/15/bin
   pgpass: /tmp/pgpass

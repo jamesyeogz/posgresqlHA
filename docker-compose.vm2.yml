@@ -10,6 +10,8 @@ services:
       - "8303:8300" # Different host port for server RPC
       - "8304:8301" # Different host port for Serf LAN
       - "8305:8302" # Different host port for Serf WAN
+      - "8601:8600" # Consul DNS TCP
+      - "8601:8600/udp" # Consul DNS UDP
     environment:
       - CONSUL_BIND_INTERFACE=eth0
       - CONSUL_CLIENT_INTERFACE=eth0
@@ -46,9 +48,12 @@ services:
       - CONSUL_HOST=consul-agent:8500
       - CONSUL_DATACENTER=dc1
       - CONSUL_ACL_TOKEN=${CONSUL_ACL_TOKEN:-}
+      - CONNECT_ADDRESS=${CONNECT_ADDRESS_VM2:-}
+      - RESTAPI_CONNECT_ADDRESS=${RESTAPI_CONNECT_ADDRESS_VM2:-}
     volumes:
       - patroni-data-vm2:/home/postgres/pgdata
       - patroni-config:/etc/patroni
+      - ./scripts:/scripts:ro
     networks:
       - patroni-network
     depends_on:
