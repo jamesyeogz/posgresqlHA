@@ -1,9 +1,9 @@
 version: "3.9"
 
 services:
-  consul-agent:
-    image: consul:1.16
-    container_name: consul-agent-vm2
+  consul-server:
+    image: hashicorp/consul:latest
+    container_name: consul-server-vm2
     restart: unless-stopped
     ports:
       - "8501:8500" # Different host port to avoid conflicts
@@ -16,10 +16,17 @@ services:
       - CONSUL_BIND_INTERFACE=eth0
       - CONSUL_CLIENT_INTERFACE=eth0
       - CONSUL_DATACENTER=dc1
-      - CONSUL_SERVER=false
-      - CONSUL_RETRY_JOIN=consul-server-0.consul-server.default.svc.cluster.local:8301
-      - CONSUL_RETRY_JOIN=consul-server-1.consul-server.default.svc.cluster.local:8301
-      - CONSUL_RETRY_JOIN=consul-server-2.consul-server.default.svc.cluster.local:8301
+    command: >
+      agent
+      -server
+      -bootstrap-expect=3
+      -ui
+      -client=0.0.0.0
+      -bind=0.0.0.0
+      -retry-join=consul-server-vm1
+      -retry-join=consul-server-vm3
+      -datacenter=dc1
+      -data-dir=/consul/data
     volumes:
       - consul-data-vm2:/consul/data
       - consul-config-vm2:/consul/config
@@ -33,9 +40,7 @@ services:
       start_period: 40s
 
   patroni-postgres:
-    build:
-      context: .
-      dockerfile: docker/Dockerfile.patroni
+    image: patroni-postgres:latest
     container_name: patroni-postgres-vm2
     restart: unless-stopped
     ports:
@@ -45,19 +50,19 @@ services:
       - HOSTNAME=patroni-postgres-vm2
       - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
       - REPLICATION_PASSWORD=${REPLICATION_PASSWORD}
-      - CONSUL_HOST=consul-agent:8500
+      - CONSUL_HOST=consul-server-vm1
       - CONSUL_DATACENTER=dc1
       - CONSUL_ACL_TOKEN=${CONSUL_ACL_TOKEN:-}
       - CONNECT_ADDRESS=${CONNECT_ADDRESS_VM2:-}
       - RESTAPI_CONNECT_ADDRESS=${RESTAPI_CONNECT_ADDRESS_VM2:-}
     volumes:
       - patroni-data-vm2:/home/postgres/pgdata
-      - patroni-config:/etc/patroni
+      - ./patroni-config:/etc/patroni:ro
       - ./scripts:/scripts:ro
     networks:
       - patroni-network
     depends_on:
-      consul-agent:
+      consul-server:
         condition: service_healthy
     healthcheck:
       test: ["CMD", "patronictl", "list"]
@@ -73,12 +78,8 @@ volumes:
     driver: local
   patroni-data-vm2:
     driver: local
-  patroni-config:
-    driver: local
 
 networks:
   patroni-network:
-    driver: bridge
-    ipam:
-      config:
-        - subnet: 172.21.0.0/16
+    external: true
+    name: patroni-shared-bridge

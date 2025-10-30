@@ -8,6 +8,8 @@ RUN apt-get update && apt-get install -y \
     python3-psycopg2 \
     curl \
     jq \
+    gettext-base \
+    gosu \
     && rm -rf /var/lib/apt/lists/*
 
 # Install Patroni with Consul support
@@ -27,9 +29,6 @@ RUN mkdir -p /home/postgres/pgdata/pgroot/data \
 # Copy entrypoint script
 COPY docker/entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
-
-# Switch to postgres user
-USER postgres
 
 # Expose ports
 EXPOSE 5432 8008

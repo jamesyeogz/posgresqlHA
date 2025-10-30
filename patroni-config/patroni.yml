@@ -4,10 +4,10 @@ name: ${HOSTNAME}
 
 restapi:
   listen: 0.0.0.0:8008
-  connect_address: ${RESTAPI_CONNECT_ADDRESS:-${HOSTNAME}:8008}
+  connect_address: ${RESTAPI_CONNECT_ADDRESS}
 
 consul:
-  host: ${CONSUL_HOST:-consul-agent:8500}
+  host: consul-server-vm1
   port: 8500
   scheme: http
   verify: false
@@ -72,7 +72,7 @@ bootstrap:
 
 postgresql:
   listen: 0.0.0.0:5432
-  connect_address: ${CONNECT_ADDRESS:-${HOSTNAME}:5432}
+  connect_address: ${CONNECT_ADDRESS}
   data_dir: /home/postgres/pgdata/pgroot/data
   bin_dir: /usr/lib/postgresql/15/bin
   pgpass: /tmp/pgpass
