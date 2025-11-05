@@ -258,12 +258,40 @@ CREATE TABLE IF NOT EXISTS auth.sessions (
 );
 
 -- Create auth.mfa_amr_claims table
+-- Note: The 'id' column and primary key constraint will be added by migration 20221011041400_add_mfa_indexes
+-- We create it without 'id' to match the expected migration state
+-- If the table exists with an old structure (with id and primary key), we need to clean it up
+DO $$
+BEGIN
+    -- Drop the table if it exists with the wrong structure (has id column with primary key)
+    IF EXISTS (
+        SELECT 1 FROM information_schema.columns 
+        WHERE table_schema = 'auth' 
+        AND table_name = 'mfa_amr_claims' 
+        AND column_name = 'id'
+    ) THEN
+        -- Check if there's a primary key constraint
+        IF EXISTS (
+            SELECT 1 FROM information_schema.table_constraints 
+            WHERE table_schema = 'auth' 
+            AND table_name = 'mfa_amr_claims' 
+            AND constraint_type = 'PRIMARY KEY'
+        ) THEN
+            -- Drop the old primary key constraint
+            ALTER TABLE auth.mfa_amr_claims DROP CONSTRAINT IF EXISTS mfa_amr_claims_pkey;
+            ALTER TABLE auth.mfa_amr_claims DROP CONSTRAINT IF EXISTS mfa_amr_claims_pkey1;
+            ALTER TABLE auth.mfa_amr_claims DROP CONSTRAINT IF EXISTS amr_id_pk;
+            -- Drop the id column so migration can add it
+            ALTER TABLE auth.mfa_amr_claims DROP COLUMN IF EXISTS id;
+        END IF;
+    END IF;
+END $$;
+
 CREATE TABLE IF NOT EXISTS auth.mfa_amr_claims (
     session_id UUID NOT NULL REFERENCES auth.sessions(id) ON DELETE CASCADE,
     created_at TIMESTAMPTZ DEFAULT NOW(),
     updated_at TIMESTAMPTZ DEFAULT NOW(),
-    authentication_method TEXT NOT NULL,
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid()
+    authentication_method TEXT NOT NULL
 );
 
 -- Create auth.mfa_factors table
@@ -404,6 +432,8 @@ CREATE INDEX IF NOT EXISTS refresh_tokens_token_idx ON auth.refresh_tokens(token
 CREATE INDEX IF NOT EXISTS refresh_tokens_user_id_idx ON auth.refresh_tokens(user_id);
 CREATE INDEX IF NOT EXISTS audit_log_entries_instance_id_idx ON auth.audit_log_entries(instance_id);
 CREATE INDEX IF NOT EXISTS sessions_user_id_idx ON auth.sessions(user_id);
+-- Note: user_id_created_at_idx and factor_id_created_at_idx will be created by migration 20221011041400_add_mfa_indexes
+-- We skip them here to avoid conflicts
 CREATE INDEX IF NOT EXISTS mfa_factors_user_id_idx ON auth.mfa_factors(user_id);
 CREATE INDEX IF NOT EXISTS objects_bucket_id_idx ON storage.objects(bucket_id);
 CREATE INDEX IF NOT EXISTS objects_name_idx ON storage.objects(name);

@@ -28,7 +28,7 @@ bootstrap:
       parameters:
         max_connections: 200
         shared_preload_libraries: "pg_stat_statements"
-        wal_level: replica
+        wal_level: logical
         hot_standby: "on"
         wal_keep_segments: 8
         max_wal_senders: 10

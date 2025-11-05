@@ -44,24 +44,32 @@ data:
         http-request return status 404
 
     # PostgreSQL Master (Read/Write)
+    # Uses Patroni REST API to detect master via HTTP health checks
+    # Each Patroni instance exposes REST API on ports 8008, 8009, 8010 respectively
     listen postgres_master
         bind *:5432
         mode tcp
-        balance roundrobin
+        option httpchk GET /master
+        http-check expect status 200
         default-server inter 3s fall 3 rise 2 on-marked-down shutdown-sessions
-        server patroni-vm1 host.docker.internal:5432 maxconn 100 check
-        server patroni-vm2 host.docker.internal:5433 maxconn 100 check
-        server patroni-vm3 host.docker.internal:5434 maxconn 100 check
+        # Check Patroni REST API on port 8008/8009/8010, connect to PostgreSQL on 5432/5433/5434
+        server patroni-vm1 host.docker.internal:5432 maxconn 100 check port 8008
+        server patroni-vm2 host.docker.internal:5433 maxconn 100 check port 8009
+        server patroni-vm3 host.docker.internal:5434 maxconn 100 check port 8010
 
     # PostgreSQL Replicas (Read Only)
+    # Uses Patroni REST API to detect replicas via HTTP health checks
     listen postgres_replicas
         bind *:5001
         mode tcp
+        option httpchk GET /replica
+        http-check expect status 200
         balance roundrobin
         default-server inter 3s fall 3 rise 2 on-marked-down shutdown-sessions
-        server patroni-vm1 host.docker.internal:5432 maxconn 100 check
-        server patroni-vm2 host.docker.internal:5433 maxconn 100 check
-        server patroni-vm3 host.docker.internal:5434 maxconn 100 check
+        # Check Patroni REST API on port 8008/8009/8010, connect to PostgreSQL on 5432/5433/5434
+        server patroni-vm1 host.docker.internal:5432 maxconn 100 check port 8008
+        server patroni-vm2 host.docker.internal:5433 maxconn 100 check port 8009
+        server patroni-vm3 host.docker.internal:5434 maxconn 100 check port 8010
 
     # Consul Cluster (API + UI)
     listen consul
