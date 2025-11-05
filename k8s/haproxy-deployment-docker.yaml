@@ -21,14 +21,13 @@ data:
 
     defaults
         log global
-        mode tcp
         retries 2
         timeout client 30m
         timeout connect 4s
         timeout server 30m
         timeout check 5s
 
-    # Stats interface (no auth for health checks)
+    # Stats interface
     listen stats
         mode http
         bind *:7000
@@ -36,37 +35,46 @@ data:
         stats uri /
         stats refresh 30s
         stats realm HAProxy\ Statistics
-        # No authentication required for K8s health checks
-        # stats auth admin:password
 
-    # Health check endpoint (for K8s probes)
+    # Health check endpoint for K8s probes
     listen health
         mode http
         bind *:7001
-        monitor-uri /health
+        http-request return status 200 content-type "text/plain" string "OK" if { path /health }
+        http-request return status 404
 
     # PostgreSQL Master (Read/Write)
-    # Connects to Docker-based Patroni instances via Minikube host gateway
     listen postgres_master
         bind *:5432
-        option httpchk GET /master
-        http-check expect status 200
+        mode tcp
+        balance roundrobin
         default-server inter 3s fall 3 rise 2 on-marked-down shutdown-sessions
-        # Using Minikube host gateway (host.minikube.internal = 192.168.65.254)
-        server patroni-vm1 192.168.65.254:5432 maxconn 100 check port 8008
-        server patroni-vm2 192.168.65.254:5433 maxconn 100 check port 8009
-        server patroni-vm3 192.168.65.254:5434 maxconn 100 check port 8010
+        server patroni-vm1 host.docker.internal:5432 maxconn 100 check
+        server patroni-vm2 host.docker.internal:5433 maxconn 100 check
+        server patroni-vm3 host.docker.internal:5434 maxconn 100 check
 
     # PostgreSQL Replicas (Read Only)
     listen postgres_replicas
         bind *:5001
-        option httpchk GET /replica
-        http-check expect status 200
+        mode tcp
         balance roundrobin
         default-server inter 3s fall 3 rise 2 on-marked-down shutdown-sessions
-        server patroni-vm1 192.168.65.254:5432 maxconn 100 check port 8008
-        server patroni-vm2 192.168.65.254:5433 maxconn 100 check port 8009
-        server patroni-vm3 192.168.65.254:5434 maxconn 100 check port 8010
+        server patroni-vm1 host.docker.internal:5432 maxconn 100 check
+        server patroni-vm2 host.docker.internal:5433 maxconn 100 check
+        server patroni-vm3 host.docker.internal:5434 maxconn 100 check
+
+    # Consul Cluster (API + UI)
+    listen consul
+        bind *:8500
+        mode http
+        balance roundrobin
+        option http-server-close
+        option forwardfor
+        option httpchk GET /v1/status/leader
+        default-server inter 3s fall 3 rise 2 on-marked-down shutdown-sessions
+        server consul-vm1 host.docker.internal:8500 check
+        server consul-vm2 host.docker.internal:8501 check
+        server consul-vm3 host.docker.internal:8502 check
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -97,6 +105,8 @@ spec:
               name: stats
             - containerPort: 7001
               name: health
+            - containerPort: 8500
+              name: consul
           volumeMounts:
             - name: haproxy-config
               mountPath: /usr/local/etc/haproxy
@@ -124,7 +134,7 @@ spec:
           configMap:
             name: haproxy-config
 ---
-# NodePort Service for HAProxy (for Minikube and development)
+# NodePort Service for Minikube / development
 apiVersion: v1
 kind: Service
 metadata:
@@ -152,9 +162,13 @@ spec:
       nodePort: 30700
       protocol: TCP
       name: stats
+    - port: 8500
+      targetPort: 8500
+      nodePort: 30500
+      protocol: TCP
+      name: consul
 ---
-# LoadBalancer Service for HAProxy (for production cloud deployments)
-# Use this service type for AWS EKS, GCP GKE, Azure AKS, or any cloud with LoadBalancer support
+# Optional LoadBalancer service for cloud / production
 apiVersion: v1
 kind: Service
 metadata:
@@ -166,10 +180,6 @@ spec:
   type: LoadBalancer
   selector:
     app: haproxy
-  # Optional: Specify loadBalancerSourceRanges to restrict access
-  # loadBalancerSourceRanges:
-  #   - 10.0.0.0/8      # Allow from private network
-  #   - 203.0.113.0/24  # Allow from specific public IP range
   ports:
     - port: 5432
       targetPort: 5432
@@ -183,10 +193,7 @@ spec:
       targetPort: 7000
       protocol: TCP
       name: stats
-  # Optional: Preserve client source IP (may not be supported on all clouds)
-  # externalTrafficPolicy: Local
-  # sessionAffinity: ClientIP
-  # sessionAffinityConfig:
-  #   clientIP:
-  #     timeoutSeconds: 10800
-
+    - port: 8500
+      targetPort: 8500
+      protocol: TCP
+      name: consul
