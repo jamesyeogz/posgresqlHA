@@ -1,0 +1,40 @@
+version: "3.9"
+
+# =============================================================================
+# HAProxy - Load Balancer for PostgreSQL HA Cluster
+# =============================================================================
+# This compose file provides a load balancer that:
+# - Routes read/write traffic to the current primary (port 5000)
+# - Routes read-only traffic to replicas with round-robin (port 5001)
+# - Provides a stats dashboard (port 7000)
+#
+# IMPORTANT: Copy .env.haproxy.example to .env.haproxy and configure before running
+# =============================================================================
+
+services:
+  haproxy:
+    image: haproxy:2.9-alpine
+    container_name: haproxy
+    hostname: haproxy
+    restart: unless-stopped
+    ports:
+      # Primary PostgreSQL (read/write) - connects to current leader
+      - "${HAPROXY_PRIMARY_PORT:-5000}:5000"
+      # Replica PostgreSQL (read-only) - load balanced across replicas
+      - "${HAPROXY_REPLICA_PORT:-5001}:5001"
+      # HAProxy Stats Dashboard
+      - "${HAPROXY_STATS_PORT:-7000}:7000"
+    volumes:
+      - ./haproxy/haproxy.cfg:/usr/local/etc/haproxy/haproxy.cfg:ro
+    networks:
+      - haproxy-net
+    healthcheck:
+      test: ["CMD", "haproxy", "-c", "-f", "/usr/local/etc/haproxy/haproxy.cfg"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+
+networks:
+  haproxy-net:
+    driver: bridge

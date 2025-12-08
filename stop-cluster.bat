@@ -1,22 +1,42 @@
 @echo off
-echo ================================================
-echo PostgreSQL HA Cluster Shutdown Script
-echo ================================================
+REM =============================================================================
+REM Stop PostgreSQL HA Cluster (Development Mode)
+REM =============================================================================
+
+echo ========================================
+echo Stopping PostgreSQL HA Cluster
+echo ========================================
 echo.
 
-echo Stopping VM3...
-docker-compose -p vm3 --env-file env.local -f docker-compose.vm3.yml down
+set /p removeVolumes="Remove data volumes? (y/n): "
+
+if /i "%removeVolumes%"=="y" (
+    echo.
+    echo WARNING: This will DELETE ALL DATA!
+    set /p confirm="Are you sure? (yes/no): "
+    if /i "!confirm!"=="yes" (
+        echo Stopping and removing volumes...
+        docker-compose -f docker-compose.dev.yml down -v
+    ) else (
+        echo Aborted.
+        pause
+        exit /b 0
+    )
+) else (
+    echo Stopping cluster (keeping data)...
+    docker-compose -f docker-compose.dev.yml down
+)
+
+echo.
+echo ========================================
+echo Cluster Stopped
+echo ========================================
 echo.
 
-echo Stopping VM2...
-docker-compose -p vm2 --env-file env.local -f docker-compose.vm2.yml down
-echo.
+REM Check for remaining containers
+for /f "tokens=*" %%a in ('docker ps --format "{{.Names}}" ^| findstr /i "patroni etcd haproxy"') do (
+    echo WARNING: Some containers are still running: %%a
+)
 
-echo Stopping VM1...
-docker-compose -p vm1 --env-file env.local -f docker-compose.vm1.yml down
-echo.
-
-echo ================================================
-echo All nodes stopped successfully!
-echo ================================================
-
+echo Done!
+pause
