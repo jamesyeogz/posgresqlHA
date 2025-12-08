@@ -1,0 +1,268 @@
+version: "3.9"
+
+# =============================================================================
+# Single-Host Development Setup
+# =============================================================================
+# This compose file runs the entire HA cluster on a SINGLE machine for testing
+# All services run with different ports to avoid conflicts
+#
+# Ports:
+#   etcd:       2379, 2381, 2383 (client) | 2380, 2382, 2384 (peer)
+#   PostgreSQL: 5432, 5433, 5434
+#   Patroni:    8008, 8009, 8010
+#   HAProxy:    5000 (primary), 5001 (replica), 7000 (stats)
+#
+# Usage: docker-compose -f docker-compose.dev.yml up -d
+# =============================================================================
+
+services:
+  # ---------------------------------------------------------------------------
+  # etcd Cluster (3 nodes)
+  # ---------------------------------------------------------------------------
+  etcd1:
+    image: quay.io/coreos/etcd:v3.5.11
+    container_name: etcd1
+    hostname: etcd1
+    restart: unless-stopped
+    ports:
+      - "2379:2379"
+      - "2380:2380"
+    environment:
+      - ETCD_NAME=etcd1
+      - ETCD_DATA_DIR=/etcd-data
+      - ETCD_LISTEN_CLIENT_URLS=http://0.0.0.0:2379
+      - ETCD_ADVERTISE_CLIENT_URLS=http://etcd1:2379
+      - ETCD_LISTEN_PEER_URLS=http://0.0.0.0:2380
+      - ETCD_INITIAL_ADVERTISE_PEER_URLS=http://etcd1:2380
+      - ETCD_INITIAL_CLUSTER=etcd1=http://etcd1:2380,etcd2=http://etcd2:2380,etcd3=http://etcd3:2380
+      - ETCD_INITIAL_CLUSTER_TOKEN=etcd-patroni-cluster
+      - ETCD_INITIAL_CLUSTER_STATE=new
+      - ETCD_ENABLE_V2=true
+    volumes:
+      - etcd1-data:/etcd-data
+    networks:
+      - patroni-dev
+    healthcheck:
+      test: ["CMD", "etcdctl", "endpoint", "health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  etcd2:
+    image: quay.io/coreos/etcd:v3.5.11
+    container_name: etcd2
+    hostname: etcd2
+    restart: unless-stopped
+    ports:
+      - "2381:2379"
+      - "2382:2380"
+    environment:
+      - ETCD_NAME=etcd2
+      - ETCD_DATA_DIR=/etcd-data
+      - ETCD_LISTEN_CLIENT_URLS=http://0.0.0.0:2379
+      - ETCD_ADVERTISE_CLIENT_URLS=http://etcd2:2379
+      - ETCD_LISTEN_PEER_URLS=http://0.0.0.0:2380
+      - ETCD_INITIAL_ADVERTISE_PEER_URLS=http://etcd2:2380
+      - ETCD_INITIAL_CLUSTER=etcd1=http://etcd1:2380,etcd2=http://etcd2:2380,etcd3=http://etcd3:2380
+      - ETCD_INITIAL_CLUSTER_TOKEN=etcd-patroni-cluster
+      - ETCD_INITIAL_CLUSTER_STATE=new
+      - ETCD_ENABLE_V2=true
+    volumes:
+      - etcd2-data:/etcd-data
+    networks:
+      - patroni-dev
+    healthcheck:
+      test: ["CMD", "etcdctl", "endpoint", "health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  etcd3:
+    image: quay.io/coreos/etcd:v3.5.11
+    container_name: etcd3
+    hostname: etcd3
+    restart: unless-stopped
+    ports:
+      - "2383:2379"
+      - "2384:2380"
+    environment:
+      - ETCD_NAME=etcd3
+      - ETCD_DATA_DIR=/etcd-data
+      - ETCD_LISTEN_CLIENT_URLS=http://0.0.0.0:2379
+      - ETCD_ADVERTISE_CLIENT_URLS=http://etcd3:2379
+      - ETCD_LISTEN_PEER_URLS=http://0.0.0.0:2380
+      - ETCD_INITIAL_ADVERTISE_PEER_URLS=http://etcd3:2380
+      - ETCD_INITIAL_CLUSTER=etcd1=http://etcd1:2380,etcd2=http://etcd2:2380,etcd3=http://etcd3:2380
+      - ETCD_INITIAL_CLUSTER_TOKEN=etcd-patroni-cluster
+      - ETCD_INITIAL_CLUSTER_STATE=new
+      - ETCD_ENABLE_V2=true
+    volumes:
+      - etcd3-data:/etcd-data
+    networks:
+      - patroni-dev
+    healthcheck:
+      test: ["CMD", "etcdctl", "endpoint", "health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ---------------------------------------------------------------------------
+  # Patroni/PostgreSQL Cluster (3 nodes)
+  # ---------------------------------------------------------------------------
+  patroni1:
+    image: ghcr.io/zalando/spilo-16:3.2-p2
+    container_name: patroni1
+    hostname: patroni1
+    restart: unless-stopped
+    ports:
+      - "5432:5432"
+      - "8008:8008"
+    environment:
+      - SCOPE=postgres-ha
+      - PGVERSION=16
+      - PATRONI_SCOPE=postgres-ha
+      - PATRONI_NAME=patroni1
+      - PATRONI_RESTAPI_LISTEN=0.0.0.0:8008
+      - PATRONI_RESTAPI_CONNECT_ADDRESS=patroni1:8008
+      - PATRONI_POSTGRESQL_LISTEN=0.0.0.0:5432
+      - PATRONI_POSTGRESQL_CONNECT_ADDRESS=patroni1:5432
+      - PATRONI_POSTGRESQL_DATA_DIR=/home/postgres/pgdata/pgroot/data
+      - PATRONI_ETCD3_HOSTS=etcd1:2379,etcd2:2379,etcd3:2379
+      - PATRONI_SUPERUSER_USERNAME=postgres
+      - PATRONI_SUPERUSER_PASSWORD=${POSTGRES_PASSWORD:-postgres}
+      - PATRONI_REPLICATION_USERNAME=replicator
+      - PATRONI_REPLICATION_PASSWORD=${REPLICATION_PASSWORD:-replicator}
+      - USE_WALG=false
+    volumes:
+      - patroni1-data:/home/postgres/pgdata
+    networks:
+      - patroni-dev
+    depends_on:
+      etcd1:
+        condition: service_healthy
+      etcd2:
+        condition: service_healthy
+      etcd3:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 60s
+
+  patroni2:
+    image: ghcr.io/zalando/spilo-16:3.2-p2
+    container_name: patroni2
+    hostname: patroni2
+    restart: unless-stopped
+    ports:
+      - "5433:5432"
+      - "8009:8008"
+    environment:
+      - SCOPE=postgres-ha
+      - PGVERSION=16
+      - PATRONI_SCOPE=postgres-ha
+      - PATRONI_NAME=patroni2
+      - PATRONI_RESTAPI_LISTEN=0.0.0.0:8008
+      - PATRONI_RESTAPI_CONNECT_ADDRESS=patroni2:8008
+      - PATRONI_POSTGRESQL_LISTEN=0.0.0.0:5432
+      - PATRONI_POSTGRESQL_CONNECT_ADDRESS=patroni2:5432
+      - PATRONI_POSTGRESQL_DATA_DIR=/home/postgres/pgdata/pgroot/data
+      - PATRONI_ETCD3_HOSTS=etcd1:2379,etcd2:2379,etcd3:2379
+      - PATRONI_SUPERUSER_USERNAME=postgres
+      - PATRONI_SUPERUSER_PASSWORD=${POSTGRES_PASSWORD:-postgres}
+      - PATRONI_REPLICATION_USERNAME=replicator
+      - PATRONI_REPLICATION_PASSWORD=${REPLICATION_PASSWORD:-replicator}
+      - USE_WALG=false
+    volumes:
+      - patroni2-data:/home/postgres/pgdata
+    networks:
+      - patroni-dev
+    depends_on:
+      etcd1:
+        condition: service_healthy
+      etcd2:
+        condition: service_healthy
+      etcd3:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 60s
+
+  patroni3:
+    image: ghcr.io/zalando/spilo-16:3.2-p2
+    container_name: patroni3
+    hostname: patroni3
+    restart: unless-stopped
+    ports:
+      - "5434:5432"
+      - "8010:8008"
+    environment:
+      - SCOPE=postgres-ha
+      - PGVERSION=16
+      - PATRONI_SCOPE=postgres-ha
+      - PATRONI_NAME=patroni3
+      - PATRONI_RESTAPI_LISTEN=0.0.0.0:8008
+      - PATRONI_RESTAPI_CONNECT_ADDRESS=patroni3:8008
+      - PATRONI_POSTGRESQL_LISTEN=0.0.0.0:5432
+      - PATRONI_POSTGRESQL_CONNECT_ADDRESS=patroni3:5432
+      - PATRONI_POSTGRESQL_DATA_DIR=/home/postgres/pgdata/pgroot/data
+      - PATRONI_ETCD3_HOSTS=etcd1:2379,etcd2:2379,etcd3:2379
+      - PATRONI_SUPERUSER_USERNAME=postgres
+      - PATRONI_SUPERUSER_PASSWORD=${POSTGRES_PASSWORD:-postgres}
+      - PATRONI_REPLICATION_USERNAME=replicator
+      - PATRONI_REPLICATION_PASSWORD=${REPLICATION_PASSWORD:-replicator}
+      - USE_WALG=false
+    volumes:
+      - patroni3-data:/home/postgres/pgdata
+    networks:
+      - patroni-dev
+    depends_on:
+      etcd1:
+        condition: service_healthy
+      etcd2:
+        condition: service_healthy
+      etcd3:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 60s
+
+  # ---------------------------------------------------------------------------
+  # HAProxy Load Balancer
+  # ---------------------------------------------------------------------------
+  haproxy:
+    image: haproxy:2.9-alpine
+    container_name: haproxy
+    hostname: haproxy
+    restart: unless-stopped
+    ports:
+      - "5000:5000"   # Primary (R/W)
+      - "5001:5001"   # Replicas (R/O)
+      - "7000:7000"   # Stats
+    volumes:
+      - ./haproxy/haproxy.dev.cfg:/usr/local/etc/haproxy/haproxy.cfg:ro
+    networks:
+      - patroni-dev
+    depends_on:
+      patroni1:
+        condition: service_healthy
+
+volumes:
+  etcd1-data:
+  etcd2-data:
+  etcd3-data:
+  patroni1-data:
+  patroni2-data:
+  patroni3-data:
+
+networks:
+  patroni-dev:
+    driver: bridge

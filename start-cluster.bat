@@ -1,68 +1,68 @@
 @echo off
-echo ================================================
-echo PostgreSQL HA Cluster Startup Script
-echo ================================================
+REM =============================================================================
+REM Start PostgreSQL HA Cluster (Development Mode - Single Host)
+REM =============================================================================
+REM This script starts the entire cluster on a single machine using
+REM docker-compose.dev.yml
+REM =============================================================================
+
+echo ========================================
+echo Starting PostgreSQL HA Cluster (Dev Mode)
+echo ========================================
 echo.
 
-echo Starting VM1 (Consul Server + Patroni)...
-docker-compose -p vm1 --env-file env.local -f docker-compose.vm1.yml up -d
-if %ERRORLEVEL% NEQ 0 (
-    echo ERROR: Failed to start VM1
+REM Check if Docker is running
+docker info >nul 2>&1
+if %errorlevel% neq 0 (
+    echo ERROR: Docker is not running. Please start Docker Desktop first.
+    pause
     exit /b 1
 )
-echo VM1 started successfully
+
+REM Pull images
+echo Pulling Docker images...
+docker-compose -f docker-compose.dev.yml pull
+
+REM Start the cluster
 echo.
+echo Starting etcd and Patroni cluster...
+docker-compose -f docker-compose.dev.yml up -d
 
-echo Waiting 5 seconds before starting VM2...
-timeout /t 5 /nobreak
+REM Wait for startup
+echo.
+echo Waiting for cluster to initialize (60 seconds)...
+timeout /t 60 /nobreak
 
-echo Starting VM2 (Consul Server + Patroni)...
-docker-compose -p vm2 --env-file env.local -f docker-compose.vm2.yml up -d
-if %ERRORLEVEL% NEQ 0 (
-    echo ERROR: Failed to start VM2
-    exit /b 1
+REM Check status
+echo.
+echo ========================================
+echo Checking cluster status...
+echo ========================================
+docker exec patroni1 patronictl list 2>nul
+if %errorlevel% neq 0 (
+    echo.
+    echo Cluster is still initializing. Check status manually:
+    echo   docker exec patroni1 patronictl list
 )
-echo VM2 started successfully
-echo.
 
-echo Waiting 5 seconds before starting VM3...
-timeout /t 5 /nobreak
-
-echo Starting VM3 (Consul Server + Patroni)...
-docker-compose -p vm3 --env-file env.local -f docker-compose.vm3.yml up -d
-if %ERRORLEVEL% NEQ 0 (
-    echo ERROR: Failed to start VM3
-    exit /b 1
-)
-echo VM3 started successfully
 echo.
-
-echo ================================================
-echo All nodes started successfully!
-echo ================================================
+echo ========================================
+echo Cluster Started!
+echo ========================================
 echo.
-echo Waiting 30 seconds for Consul cluster to form...
-timeout /t 30 /nobreak
+echo Connection endpoints:
+echo   Primary (R/W):  localhost:5000
+echo   Replica (R/O):  localhost:5001
+echo   HAProxy Stats:  http://localhost:7000/stats
 echo.
-
-echo Checking Consul cluster status...
-docker exec consul-server-vm1 consul members
+echo Direct access:
+echo   patroni1: localhost:5432
+echo   patroni2: localhost:5433
+echo   patroni3: localhost:5434
 echo.
-
-echo Waiting another 30 seconds for Patroni to initialize...
-timeout /t 30 /nobreak
+echo Useful commands:
+echo   Check status:  docker exec patroni1 patronictl list
+echo   View logs:     docker-compose -f docker-compose.dev.yml logs -f
+echo   Stop cluster:  stop-cluster.bat
 echo.
-
-echo Checking Patroni cluster status...
-docker exec patroni-postgres-vm1 patronictl list
-echo.
-
-echo ================================================
-echo Setup complete!
-echo ================================================
-echo Consul UI: http://localhost:8500
-echo PostgreSQL Primary: localhost:5432
-echo PostgreSQL Replica 1: localhost:5433
-echo PostgreSQL Replica 2: localhost:5434
-echo.
-
+pause

@@ -1,85 +1,126 @@
 version: "3.9"
 
-services:
-  consul-server:
-    image: hashicorp/consul:latest
-    container_name: consul-server-vm2
-    restart: unless-stopped
-    ports:
-      - "8501:8500" # Different host port to avoid conflicts
-      - "8303:8300" # Different host port for server RPC
-      - "8304:8301" # Different host port for Serf LAN
-      - "8305:8302" # Different host port for Serf WAN
-      - "8601:8600" # Consul DNS TCP
-      - "8601:8600/udp" # Consul DNS UDP
-    environment:
-      - CONSUL_BIND_INTERFACE=eth0
-      - CONSUL_CLIENT_INTERFACE=eth0
-      - CONSUL_DATACENTER=dc1
-    command: >
-      agent
-      -server
-      -bootstrap-expect=3
-      -ui
-      -client=0.0.0.0
-      -bind=0.0.0.0
-      -retry-join=consul-server-vm1
-      -retry-join=consul-server-vm3
-      -datacenter=dc1
-      -data-dir=/consul/data
-    volumes:
-      - consul-data-vm2:/consul/data
-      - consul-config-vm2:/consul/config
-    networks:
-      - patroni-network
-    healthcheck:
-      test: ["CMD", "consul", "members"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-      start_period: 40s
+# =============================================================================
+# VM2 - PostgreSQL HA Cluster Node 2
+# =============================================================================
+# This compose file runs on VM2 and includes:
+# - etcd node 2 (part of 3-node etcd cluster)
+# - Patroni/Spilo PostgreSQL node 2
+#
+# IMPORTANT: Copy .env.vm2.example to .env.vm2 and configure before running
+# =============================================================================
 
-  patroni-postgres:
-    image: patroni-postgres:latest
-    container_name: patroni-postgres-vm2
+services:
+  # ---------------------------------------------------------------------------
+  # etcd - Distributed Key-Value Store for Patroni DCS
+  # ---------------------------------------------------------------------------
+  etcd2:
+    image: quay.io/coreos/etcd:v3.5.11
+    container_name: etcd2
+    hostname: etcd2
     restart: unless-stopped
     ports:
-      - "5433:5432" # PostgreSQL port (different from VM1)
-      - "8009:8008" # Patroni API port (different from VM1)
+      - "${ETCD_CLIENT_PORT:-2379}:2379"
+      - "${ETCD_PEER_PORT:-2380}:2380"
     environment:
-      - HOSTNAME=patroni-postgres-vm2
-      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
-      - REPLICATION_PASSWORD=${REPLICATION_PASSWORD}
-      - CONSUL_HOST=consul-server-vm1
-      - CONSUL_DATACENTER=dc1
-      - CONSUL_ACL_TOKEN=${CONSUL_ACL_TOKEN:-}
-      - CONNECT_ADDRESS=${CONNECT_ADDRESS_VM2:-}
-      - RESTAPI_CONNECT_ADDRESS=${RESTAPI_CONNECT_ADDRESS_VM2:-}
+      - ETCD_NAME=etcd2
+      - ETCD_DATA_DIR=/etcd-data
+      - ETCD_LISTEN_CLIENT_URLS=http://0.0.0.0:2379
+      - ETCD_ADVERTISE_CLIENT_URLS=http://${NODE2_IP:-127.0.0.1}:2379
+      - ETCD_LISTEN_PEER_URLS=http://0.0.0.0:2380
+      - ETCD_INITIAL_ADVERTISE_PEER_URLS=http://${NODE2_IP:-127.0.0.1}:2380
+      - ETCD_INITIAL_CLUSTER=etcd1=http://${NODE1_IP:-127.0.0.1}:2380,etcd2=http://${NODE2_IP:-127.0.0.1}:2380,etcd3=http://${NODE3_IP:-127.0.0.1}:2380
+      - ETCD_INITIAL_CLUSTER_TOKEN=etcd-patroni-cluster
+      - ETCD_INITIAL_CLUSTER_STATE=new
+      - ETCD_ENABLE_V2=true
+      - ETCD_AUTO_COMPACTION_RETENTION=1
+      - ETCD_AUTO_COMPACTION_MODE=periodic
+      - ETCD_QUOTA_BACKEND_BYTES=8589934592
     volumes:
-      - patroni-data-vm2:/home/postgres/pgdata
-      - ./patroni-config:/etc/patroni:ro
-      - ./scripts:/scripts:ro
+      - etcd2-data:/etcd-data
     networks:
-      - patroni-network
+      - patroni-net
+    healthcheck:
+      test: ["CMD", "etcdctl", "endpoint", "health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+  # ---------------------------------------------------------------------------
+  # Patroni - PostgreSQL HA Manager (using Zalando Spilo image)
+  # ---------------------------------------------------------------------------
+  patroni2:
+    image: ghcr.io/zalando/spilo-16:3.2-p2
+    container_name: patroni2
+    hostname: patroni2
+    restart: unless-stopped
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+      - "${PATRONI_API_PORT:-8008}:8008"
+    environment:
+      # Spilo/Patroni settings
+      - SCOPE=postgres-ha
+      - PGVERSION=16
+      - PGROOT=/home/postgres/pgdata/pgroot
+      - PGDATA=/home/postgres/pgdata/pgroot/data
+      - PGLOG=/home/postgres/pgdata/pgroot/pg_log
+      
+      # Patroni settings
+      - PATRONI_SCOPE=postgres-ha
+      - PATRONI_NAME=patroni2
+      - PATRONI_RESTAPI_LISTEN=0.0.0.0:8008
+      - PATRONI_RESTAPI_CONNECT_ADDRESS=${NODE2_IP:-127.0.0.1}:8008
+      - PATRONI_POSTGRESQL_LISTEN=0.0.0.0:5432
+      - PATRONI_POSTGRESQL_CONNECT_ADDRESS=${NODE2_IP:-127.0.0.1}:5432
+      - PATRONI_POSTGRESQL_DATA_DIR=/home/postgres/pgdata/pgroot/data
+      
+      # etcd DCS configuration
+      - PATRONI_ETCD3_HOSTS=${NODE1_IP:-127.0.0.1}:2379,${NODE2_IP:-127.0.0.1}:2379,${NODE3_IP:-127.0.0.1}:2379
+      
+      # PostgreSQL superuser
+      - PATRONI_SUPERUSER_USERNAME=postgres
+      - PATRONI_SUPERUSER_PASSWORD=${POSTGRES_PASSWORD:-postgres}
+      
+      # Replication user
+      - PATRONI_REPLICATION_USERNAME=replicator
+      - PATRONI_REPLICATION_PASSWORD=${REPLICATION_PASSWORD:-replicator}
+      
+      # Additional settings
+      - PATRONI_POSTGRESQL_PARAMETERS_MAX_CONNECTIONS=200
+      - PATRONI_POSTGRESQL_PARAMETERS_SHARED_BUFFERS=256MB
+      - PATRONI_POSTGRESQL_PARAMETERS_WAL_LEVEL=replica
+      - PATRONI_POSTGRESQL_PARAMETERS_HOT_STANDBY=on
+      - PATRONI_POSTGRESQL_PARAMETERS_MAX_WAL_SENDERS=10
+      - PATRONI_POSTGRESQL_PARAMETERS_MAX_REPLICATION_SLOTS=10
+      
+      # Spilo-specific
+      - SPILO_CONFIGURATION='{"bootstrap":{"dcs":{"ttl":30,"loop_wait":10,"retry_timeout":10,"maximum_lag_on_failover":1048576,"postgresql":{"use_pg_rewind":true,"use_slots":true}}}}'
+      - USE_WALG=false
+      - ENABLE_WAL_PATH_COMPAT=true
+    volumes:
+      - patroni2-data:/home/postgres/pgdata
+    networks:
+      - patroni-net
     depends_on:
-      consul-server:
+      etcd2:
         condition: service_healthy
     healthcheck:
-      test: ["CMD", "patronictl", "list"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
+      test: ["CMD-SHELL", "pg_isready -U postgres || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
       start_period: 60s
 
 volumes:
-  consul-data-vm2:
+  etcd2-data:
     driver: local
-  consul-config-vm2:
-    driver: local
-  patroni-data-vm2:
+  patroni2-data:
     driver: local
 
 networks:
-  patroni-network:
-    external: true
-    name: patroni-shared-bridge
+  patroni-net:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.28.0.0/16
