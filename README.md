@@ -1,320 +1,397 @@
-# PostgreSQL High Availability with Patroni, etcd, and HAProxy
+# PostgreSQL HA Cluster with Patroni + Supabase
 
-A production-ready PostgreSQL High Availability cluster using:
-- **Patroni** (via Zalando Spilo) for PostgreSQL HA management and automatic failover
-- **etcd** as the Distributed Configuration Store (DCS) for cluster coordination
-- **HAProxy** for load balancing and automatic primary/replica routing
-- **Docker** and **Docker Compose** for easy deployment
-
-All components use **existing Docker images** - no custom builds required.
-
-## Features
-
-- ✅ **3-node PostgreSQL 16 cluster** with automatic failover
-- ✅ **3-node etcd cluster** for distributed consensus
-- ✅ **Streaming replication** between primary and replicas
-- ✅ **Automatic leader election** on primary failure
-- ✅ **HAProxy load balancing** with separate read/write endpoints
-- ✅ **Single-host development** or **multi-VM production** deployment options
-- ✅ **No custom image builds** - uses official Zalando Spilo, etcd, and HAProxy images
-- ✅ **No Kubernetes required** - pure Docker solution
+A production-ready PostgreSQL High Availability cluster using Patroni (Spilo) with etcd, designed to work with Supabase.
 
 ## Architecture
 
 ```
-                                    ┌─────────────────┐
-                                    │    HAProxy      │
-                                    │  (Load Balancer)│
-                                    │                 │
-                                    │ Port 5000: R/W  │
-                                    │ Port 5001: R/O  │
-                                    │ Port 7000: Stats│
-                                    └────────┬────────┘
-                                             │
-              ┌──────────────────────────────┼──────────────────────────────┐
-              │                              │                              │
-              ▼                              ▼                              ▼
-┌─────────────────────────┐    ┌─────────────────────────┐    ┌─────────────────────────┐
-│         VM1             │    │         VM2             │    │         VM3             │
-│                         │    │                         │    │                         │
-│  ┌───────────────────┐  │    │  ┌───────────────────┐  │    │  ┌───────────────────┐  │
-│  │      etcd1        │  │    │  │      etcd2        │  │    │  │      etcd3        │  │
-│  │    (2379/2380)    │◄─┼────┼──┤    (2379/2380)    │◄─┼────┼──┤    (2379/2380)    │  │
-│  └───────────────────┘  │    │  └───────────────────┘  │    │  └───────────────────┘  │
-│           │             │    │           │             │    │           │             │
-│           ▼             │    │           ▼             │    │           ▼             │
-│  ┌───────────────────┐  │    │  ┌───────────────────┐  │    │  ┌───────────────────┐  │
-│  │    Patroni1       │  │    │  │    Patroni2       │  │    │  │    Patroni3       │  │
-│  │   PostgreSQL 16   │  │    │  │   PostgreSQL 16   │  │    │  │   PostgreSQL 16   │  │
-│  │   (5432/8008)     │  │    │  │   (5432/8008)     │  │    │  │   (5432/8008)     │  │
-│  │                   │  │    │  │                   │  │    │  │                   │  │
-│  │  Leader/Replica   │◄─┼────┼──┤     Replica       │◄─┼────┼──┤     Replica       │  │
-│  └───────────────────┘  │    │  └───────────────────┘  │    │  └───────────────────┘  │
-│                         │    │                         │    │                         │
-└─────────────────────────┘    └─────────────────────────┘    └─────────────────────────┘
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                           3-Node HA Cluster                                  │
+├─────────────────────┬─────────────────────┬─────────────────────────────────┤
+│        VM1          │        VM2          │              VM3                │
+│  ┌───────────────┐  │  ┌───────────────┐  │  ┌───────────────┐              │
+│  │   etcd1       │◄─┼──┤   etcd2       │◄─┼──┤   etcd3       │              │
+│  │   :2379/2380  │  │  │   :2379/2380  │  │  │   :2379/2380  │              │
+│  └───────┬───────┘  │  └───────┬───────┘  │  └───────┬───────┘              │
+│          │          │          │          │          │                      │
+│  ┌───────▼───────┐  │  ┌───────▼───────┐  │  ┌───────▼───────┐              │
+│  │  Patroni1     │  │  │  Patroni2     │  │  │  Patroni3     │              │
+│  │  (PRIMARY)    │  │  │  (REPLICA)    │  │  │  (REPLICA)    │              │
+│  │  :5432/:8008  │  │  │  :5432/:8008  │  │  │  :5432/:8008  │              │
+│  └───────────────┘  │  └───────────────┘  │  └───────────────┘              │
+└─────────────────────┴─────────────────────┴─────────────────────────────────┘
+                                    │
+                                    ▼
+                        ┌───────────────────┐
+                        │     HAProxy       │
+                        │   :5000 (R/W)     │
+                        │   :5001 (R/O)     │
+                        └─────────┬─────────┘
+                                  │
+                                  ▼
+                        ┌───────────────────┐
+                        │     Supabase      │
+                        │   (Auth, API,     │
+                        │    Storage, etc)  │
+                        └───────────────────┘
 ```
-
-## Docker Images Used
-
-| Component | Image | Version |
-|-----------|-------|---------|
-| etcd | `quay.io/coreos/etcd` | v3.5.11 |
-| Patroni/PostgreSQL | `ghcr.io/zalando/spilo-16` | 3.2-p2 |
-| HAProxy | `haproxy` | 2.9-alpine |
-
-**No custom images need to be built** - everything is pulled from public registries.
 
 ## Prerequisites
 
-- Docker (20.10+) and Docker Compose (v2+)
-- At least 4GB RAM available for Docker
-- Network ports available: 2379-2380, 5432, 5000-5001, 7000, 8008
+- 3 VMs (Linux) with Docker and Docker Compose installed
+- Network connectivity between all VMs on ports:
+  - `2379`, `2380` (etcd)
+  - `5432` (PostgreSQL)
+  - `8008` (Patroni REST API)
+- Static IPs for each VM
 
 ## Quick Start
 
-### Option 1: Single-Host Development (Fastest)
+### 1. Set Environment Variables (on each VM)
 
-Run the entire cluster on one machine:
+**VM1:**
 
 ```bash
-# Start everything
-docker-compose -f docker-compose.dev.yml up -d
+export NODE1_IP=192.168.1.10   # Replace with actual VM1 IP
+export NODE2_IP=192.168.1.11   # Replace with actual VM2 IP
+export NODE3_IP=192.168.1.12   # Replace with actual VM3 IP
+export POSTGRES_PASSWORD=your_secure_password
+export REPLICATION_PASSWORD=your_replication_password
+```
 
-# Check cluster status (wait ~60 seconds for initialization)
+**VM2 & VM3:** Same variables (all VMs need to know all IPs)
+
+### 2. Copy Files to Each VM
+
+Copy these files/folders to each VM:
+
+- `docker-compose.vm1.yml` → VM1
+- `docker-compose.vm2.yml` → VM2
+- `docker-compose.vm3.yml` → VM3
+- `scripts/` folder → All VMs
+
+### 3. Start the Cluster
+
+**Start VM1 first (will become primary):**
+
+```bash
+# On VM1
+docker-compose -f docker-compose.vm1.yml up -d
+```
+
+**Wait 30 seconds, then start VM2 and VM3:**
+
+```bash
+# On VM2
+docker-compose -f docker-compose.vm2.yml up -d
+
+# On VM3
+docker-compose -f docker-compose.vm3.yml up -d
+```
+
+### 4. Verify Cluster Status
+
+```bash
+# On any VM
 docker exec patroni1 patronictl list
-
-# Connect to database
-psql -h localhost -p 5000 -U postgres -d postgres
-# Password: postgres (default)
 ```
 
-**Connection Endpoints:**
-
-| Endpoint | Port | Purpose |
-|----------|------|---------|
-| Primary (R/W) | `localhost:5000` | Write operations (via HAProxy) |
-| Replica (R/O) | `localhost:5001` | Read operations (via HAProxy) |
-| HAProxy Stats | `localhost:7000/stats` | Dashboard (admin/admin123) |
-
-**Stop the cluster:**
-```bash
-docker-compose -f docker-compose.dev.yml down       # Keep data
-docker-compose -f docker-compose.dev.yml down -v    # Remove all data
-```
-
-### Option 2: Multi-VM Production
-
-Deploy across 3 separate VMs for production high availability.
-
-**See [HA-SETUP.md](HA-SETUP.md) for detailed instructions.**
-
-Quick overview:
-
-1. **Edit environment files** on each VM:
-   ```bash
-   # On VM1
-   vim .env.vm1
-   # Update NODE1_IP, NODE2_IP, NODE3_IP with actual IPs
-   # Set POSTGRES_PASSWORD and REPLICATION_PASSWORD
-   ```
-
-2. **Update HAProxy config**:
-   ```bash
-   vim haproxy/haproxy.cfg
-   # Replace placeholder IPs with actual VM IPs
-   ```
-
-3. **Start cluster** (all nodes within 60 seconds):
-   ```bash
-   # VM1
-   docker-compose --env-file .env.vm1 -f docker-compose.vm1.yml up -d
-   
-   # VM2
-   docker-compose --env-file .env.vm2 -f docker-compose.vm2.yml up -d
-   
-   # VM3
-   docker-compose --env-file .env.vm3 -f docker-compose.vm3.yml up -d
-   ```
-
-4. **Start HAProxy** (on any VM):
-   ```bash
-   docker-compose --env-file .env.haproxy -f docker-compose.haproxy.yml up -d
-   ```
-
-## File Structure
+Expected output:
 
 ```
-.
-├── docker-compose.dev.yml      # Single-host development setup (all-in-one)
-├── docker-compose.vm1.yml      # VM1: etcd1 + patroni1
-├── docker-compose.vm2.yml      # VM2: etcd2 + patroni2
-├── docker-compose.vm3.yml      # VM3: etcd3 + patroni3
-├── docker-compose.haproxy.yml  # HAProxy load balancer
-├── .env.vm1                    # VM1 configuration
-├── .env.vm2                    # VM2 configuration
-├── .env.vm3                    # VM3 configuration
-├── .env.haproxy                # HAProxy configuration
-├── .env.dev                    # Development configuration
-├── haproxy/
-│   ├── haproxy.cfg             # Multi-VM HAProxy config
-│   └── haproxy.dev.cfg         # Single-host HAProxy config
-├── scripts/
-│   ├── start-cluster.sh        # Start cluster helper
-│   ├── stop-cluster.sh         # Stop cluster helper
-│   └── cluster-status.sh       # Status check helper
-├── HA-SETUP.md                 # Detailed HA setup documentation
-└── DOCKER-SETUP.md             # Quick reference guide
++ Cluster: postgres-ha ----+---------+---------+----+-----------+
+| Member    | Host         | Role    | State   | TL | Lag in MB |
++-----------+--------------+---------+---------+----+-----------+
+| patroni1  | 192.168.1.10 | Leader  | running |  1 |           |
+| patroni2  | 192.168.1.11 | Replica | running |  1 |         0 |
+| patroni3  | 192.168.1.12 | Replica | running |  1 |         0 |
++-----------+--------------+---------+---------+----+-----------+
 ```
 
-## Common Operations
+## Supabase Database Initialization
 
-### Check Cluster Status
+The Supabase init script (`scripts/init-supabase-db.sql`) runs automatically when the cluster bootstraps for the first time. It creates:
+
+- Required schemas: `auth`, `storage`, `realtime`, `_analytics`, `_realtime`, etc.
+- Required roles: `anon`, `authenticated`, `service_role`, etc.
+- Core tables: `auth.users`, `auth.sessions`, `storage.buckets`, etc.
+- Helper functions: `auth.uid()`, `auth.role()`, `auth.email()`
+- Row Level Security (RLS) policies
+
+### Manual Initialization (if needed)
+
+If you need to run the init script manually:
 
 ```bash
-# Patroni cluster status
-docker exec patroni1 patronictl list
-
-# etcd cluster health
-docker exec etcd1 etcdctl endpoint health --cluster
-
-# etcd member list
-docker exec etcd1 etcdctl member list -w table
+# Connect to primary
+docker exec -it patroni1 psql -U postgres -d postgres -f /scripts/init-supabase-db.sql
 ```
 
-### Manual Failover
+### Verify Supabase Schema
 
 ```bash
-# Failover to specific node
-docker exec patroni1 patronictl failover postgres-ha --candidate patroni2 --force
-
-# Graceful switchover
-docker exec patroni1 patronictl switchover postgres-ha --candidate patroni2 --force
+docker exec patroni1 psql -U postgres -c "\dn"  # List schemas
+docker exec patroni1 psql -U postgres -c "\dt auth.*"  # List auth tables
+docker exec patroni1 psql -U postgres -c "\du"  # List roles
 ```
 
-### View Logs
+## Deploying Supabase
 
-```bash
-docker logs -f patroni1    # Patroni logs
-docker logs -f etcd1       # etcd logs
-docker logs -f haproxy     # HAProxy logs
+### Option 1: Docker Compose (Single Node)
+
+Create a `docker-compose.supabase.yml`:
+
+```yaml
+version: "3.9"
+
+services:
+  supabase-studio:
+    image: supabase/studio:latest
+    ports:
+      - "3000:3000"
+    environment:
+      STUDIO_PG_META_URL: http://supabase-meta:8080
+      SUPABASE_URL: http://supabase-kong:8000
+      SUPABASE_ANON_KEY: ${ANON_KEY}
+      SUPABASE_SERVICE_KEY: ${SERVICE_KEY}
+
+  supabase-kong:
+    image: kong:2.8.1
+    ports:
+      - "8000:8000"
+      - "8443:8443"
+    environment:
+      KONG_DATABASE: "off"
+      KONG_DECLARATIVE_CONFIG: /var/lib/kong/kong.yml
+    volumes:
+      - ./kong.yml:/var/lib/kong/kong.yml:ro
+
+  supabase-auth:
+    image: supabase/gotrue:v2.143.0
+    environment:
+      GOTRUE_API_HOST: 0.0.0.0
+      GOTRUE_API_PORT: 9999
+      API_EXTERNAL_URL: ${API_EXTERNAL_URL}
+      GOTRUE_DB_DRIVER: postgres
+      GOTRUE_DB_DATABASE_URL: postgres://postgres:${POSTGRES_PASSWORD}@${NODE1_IP}:5432/postgres
+      GOTRUE_SITE_URL: ${SITE_URL}
+      GOTRUE_JWT_SECRET: ${JWT_SECRET}
+      GOTRUE_JWT_EXP: 3600
+      GOTRUE_JWT_DEFAULT_GROUP_NAME: authenticated
+
+  supabase-rest:
+    image: postgrest/postgrest:v11.2.0
+    environment:
+      PGRST_DB_URI: postgres://postgres:${POSTGRES_PASSWORD}@${NODE1_IP}:5432/postgres
+      PGRST_DB_SCHEMAS: public,storage,graphql_public
+      PGRST_DB_ANON_ROLE: anon
+      PGRST_JWT_SECRET: ${JWT_SECRET}
+      PGRST_DB_USE_LEGACY_GUCS: "false"
+
+  supabase-realtime:
+    image: supabase/realtime:v2.25.50
+    environment:
+      PORT: 4000
+      DB_HOST: ${NODE1_IP}
+      DB_PORT: 5432
+      DB_USER: postgres
+      DB_PASSWORD: ${POSTGRES_PASSWORD}
+      DB_NAME: postgres
+      DB_SSL: "false"
+      SECRET_KEY_BASE: ${SECRET_KEY_BASE}
+
+  supabase-storage:
+    image: supabase/storage-api:v0.43.11
+    environment:
+      ANON_KEY: ${ANON_KEY}
+      SERVICE_KEY: ${SERVICE_KEY}
+      DATABASE_URL: postgres://postgres:${POSTGRES_PASSWORD}@${NODE1_IP}:5432/postgres
+      PGRST_JWT_SECRET: ${JWT_SECRET}
+      STORAGE_BACKEND: file
+      FILE_STORAGE_BACKEND_PATH: /var/lib/storage
+    volumes:
+      - supabase-storage-data:/var/lib/storage
+
+  supabase-meta:
+    image: supabase/postgres-meta:v0.68.0
+    environment:
+      PG_META_PORT: 8080
+      PG_META_DB_HOST: ${NODE1_IP}
+      PG_META_DB_PORT: 5432
+      PG_META_DB_NAME: postgres
+      PG_META_DB_USER: postgres
+      PG_META_DB_PASSWORD: ${POSTGRES_PASSWORD}
+
+volumes:
+  supabase-storage-data:
 ```
 
-### Backup
+### Option 2: Kubernetes (Helm)
+
+Use the official Supabase Helm chart with external PostgreSQL:
 
 ```bash
-# SQL dump
-docker exec patroni1 pg_dump -U postgres -d postgres > backup.sql
+# Add Supabase Helm repo
+helm repo add supabase https://supabase-community.github.io/supabase-kubernetes/
+
+# Create values file
+cat > supabase-values.yaml << EOF
+global:
+  postgresql:
+    host: ${NODE1_IP}  # Or HAProxy IP
+    port: 5432
+    user: postgres
+    password: ${POSTGRES_PASSWORD}
+    database: postgres
+
+studio:
+  enabled: true
+
+auth:
+  enabled: true
+
+rest:
+  enabled: true
+
+realtime:
+  enabled: true
+
+storage:
+  enabled: true
+EOF
+
+# Install
+helm install supabase supabase/supabase -f supabase-values.yaml
 ```
 
-## Helper Scripts
+## HAProxy Setup (Optional)
+
+For load balancing and automatic failover detection:
+
+**`haproxy/haproxy.cfg`:**
+
+```
+global
+    maxconn 1000
+
+defaults
+    mode tcp
+    timeout connect 10s
+    timeout client 30s
+    timeout server 30s
+
+frontend postgres_rw
+    bind *:5000
+    default_backend postgres_primary
+
+frontend postgres_ro
+    bind *:5001
+    default_backend postgres_replicas
+
+backend postgres_primary
+    option httpchk GET /primary
+    http-check expect status 200
+    default-server inter 3s fall 3 rise 2 on-marked-down shutdown-sessions
+    server patroni1 ${NODE1_IP}:5432 check port 8008
+    server patroni2 ${NODE2_IP}:5432 check port 8008
+    server patroni3 ${NODE3_IP}:5432 check port 8008
+
+backend postgres_replicas
+    option httpchk GET /replica
+    http-check expect status 200
+    default-server inter 3s fall 3 rise 2 on-marked-down shutdown-sessions
+    server patroni1 ${NODE1_IP}:5432 check port 8008
+    server patroni2 ${NODE2_IP}:5432 check port 8008
+    server patroni3 ${NODE3_IP}:5432 check port 8008
+
+listen stats
+    bind *:7000
+    mode http
+    stats enable
+    stats uri /
+```
+
+Run HAProxy:
 
 ```bash
-# Start a specific node
-./scripts/start-cluster.sh 1                    # Start VM1
-./scripts/start-cluster.sh 1 --with-haproxy     # Start VM1 + HAProxy
+docker run -d --name haproxy \
+  --network host \
+  -v $(pwd)/haproxy/haproxy.cfg:/usr/local/etc/haproxy/haproxy.cfg:ro \
+  haproxy:2.8
+```
 
-# Stop a specific node
-./scripts/stop-cluster.sh 1                     # Stop VM1
-./scripts/stop-cluster.sh --all                 # Stop all nodes
-./scripts/stop-cluster.sh 1 --remove-volumes    # Stop and remove data
+## Common Commands
 
+```bash
 # Check cluster status
-./scripts/cluster-status.sh                     # One-time check
-./scripts/cluster-status.sh --watch             # Continuous monitoring
-```
-
-## Testing Failover
-
-```bash
-# 1. Check current leader
 docker exec patroni1 patronictl list
 
-# 2. Stop the leader
-docker stop patroni1
+# Failover to specific node
+docker exec patroni1 patronictl failover --candidate patroni2
 
-# 3. Wait 30-60 seconds and verify new leader elected
-docker exec patroni2 patronictl list
+# Switchover (graceful)
+docker exec patroni1 patronictl switchover --master patroni1 --candidate patroni2
 
-# 4. Restart original node (becomes replica)
-docker start patroni1
+# Check replication lag
+docker exec patroni1 psql -U postgres -c "SELECT client_addr, state, sent_lsn, write_lsn, flush_lsn, replay_lsn FROM pg_stat_replication;"
 
-# 5. Verify cluster recovered
-docker exec patroni1 patronictl list
+# View Patroni logs
+docker logs patroni1 --tail 100 -f
+
+# Connect to PostgreSQL
+docker exec -it patroni1 psql -U postgres
 ```
-
-## Port Reference
-
-| Port | Service | Description |
-|------|---------|-------------|
-| 2379 | etcd | Client connections |
-| 2380 | etcd | Peer communication |
-| 5432 | PostgreSQL | Database connections |
-| 8008 | Patroni | REST API / health checks |
-| 5000 | HAProxy | Primary (R/W) endpoint |
-| 5001 | HAProxy | Replica (R/O) endpoint |
-| 7000 | HAProxy | Stats dashboard |
-
-## Environment Variables
-
-### Required (Production)
-
-```bash
-NODE1_IP=192.168.1.101
-NODE2_IP=192.168.1.102
-NODE3_IP=192.168.1.103
-POSTGRES_PASSWORD=secure-password
-REPLICATION_PASSWORD=secure-password
-```
-
-### Optional
-
-```bash
-ETCD_CLIENT_PORT=2379
-ETCD_PEER_PORT=2380
-POSTGRES_PORT=5432
-PATRONI_API_PORT=8008
-```
-
-## Security Considerations
-
-- ⚠️ Change default passwords before production use
-- ⚠️ Update HAProxy stats credentials (default: admin/admin123)
-- Consider enabling SSL/TLS for PostgreSQL connections
-- Configure firewall rules to restrict access
-- Use private network for cluster communication
 
 ## Troubleshooting
 
-See [HA-SETUP.md](HA-SETUP.md#troubleshooting) for detailed troubleshooting guide.
+### Patroni nodes not forming cluster
 
-**Quick checks:**
+1. Check all VMs can reach each other:
+
+   ```bash
+   # From VM1
+   curl http://${NODE2_IP}:8008/health
+   curl http://${NODE3_IP}:8008/health
+   ```
+
+2. Check etcd cluster health:
+
+   ```bash
+   docker exec etcd1 etcdctl endpoint health --cluster
+   docker exec etcd1 etcdctl member list
+   ```
+
+3. Check Patroni logs:
+   ```bash
+   docker logs patroni1 --tail 100
+   ```
+
+### Reset cluster (delete all data)
 
 ```bash
-# etcd not forming cluster?
-docker logs etcd1
-docker exec etcd1 etcdctl endpoint health --cluster
+# Stop all services
+docker-compose -f docker-compose.vm1.yml down -v
+docker-compose -f docker-compose.vm2.yml down -v
+docker-compose -f docker-compose.vm3.yml down -v
 
-# Patroni not electing leader?
-docker logs patroni1
-docker exec patroni1 patronictl list
-
-# HAProxy showing backends DOWN?
-curl http://<NODE_IP>:8008/health
-docker logs haproxy
+# Remove volumes
+docker volume rm $(docker volume ls -q | grep patroni)
+docker volume rm $(docker volume ls -q | grep etcd)
 ```
 
-## Documentation
+## Environment Variables Reference
 
-- [HA-SETUP.md](HA-SETUP.md) - Complete setup guide with detailed instructions
-- [DOCKER-SETUP.md](DOCKER-SETUP.md) - Quick reference guide
+| Variable               | Description                   | Required |
+| ---------------------- | ----------------------------- | -------- |
+| `NODE1_IP`             | IP address of VM1             | Yes      |
+| `NODE2_IP`             | IP address of VM2             | Yes      |
+| `NODE3_IP`             | IP address of VM3             | Yes      |
+| `POSTGRES_PASSWORD`    | PostgreSQL superuser password | Yes      |
+| `REPLICATION_PASSWORD` | Replication user password     | Yes      |
 
-## External Resources
+## Security Notes
 
-- [Patroni Documentation](https://patroni.readthedocs.io/)
-- [Zalando Spilo](https://github.com/zalando/spilo)
-- [etcd Documentation](https://etcd.io/docs/)
-- [HAProxy Documentation](http://www.haproxy.org/)
-
-## License
-
-MIT License
+- Change default passwords before production use
+- Use TLS for PostgreSQL connections in production
+- Restrict network access using firewalls
+- Use secrets management (Vault, K8s secrets) for credentials

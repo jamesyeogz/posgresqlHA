@@ -17,24 +17,13 @@ services:
     container_name: haproxy
     hostname: haproxy
     restart: unless-stopped
-    ports:
-      # Primary PostgreSQL (read/write) - connects to current leader
-      - "${HAPROXY_PRIMARY_PORT:-5000}:5000"
-      # Replica PostgreSQL (read-only) - load balanced across replicas
-      - "${HAPROXY_REPLICA_PORT:-5001}:5001"
-      # HAProxy Stats Dashboard
-      - "${HAPROXY_STATS_PORT:-7000}:7000"
+    network_mode: host # Use host network to reach Patroni instances on VMs
+    # ports not needed with network_mode: host (uses host ports directly: 5000, 5001, 5002, 7000)
     volumes:
       - ./haproxy/haproxy.cfg:/usr/local/etc/haproxy/haproxy.cfg:ro
-    networks:
-      - haproxy-net
     healthcheck:
       test: ["CMD", "haproxy", "-c", "-f", "/usr/local/etc/haproxy/haproxy.cfg"]
       interval: 30s
       timeout: 10s
       retries: 3
       start_period: 10s
-
-networks:
-  haproxy-net:
-    driver: bridge

@@ -19,9 +19,8 @@ services:
     container_name: etcd2
     hostname: etcd2
     restart: unless-stopped
-    ports:
-      - "${ETCD_CLIENT_PORT:-2379}:2379"
-      - "${ETCD_PEER_PORT:-2380}:2380"
+    network_mode: host # Use host network so etcd uses VM IP
+    # ports not needed with network_mode: host
     environment:
       - ETCD_NAME=etcd2
       - ETCD_DATA_DIR=/etcd-data
@@ -38,8 +37,6 @@ services:
       - ETCD_QUOTA_BACKEND_BYTES=8589934592
     volumes:
       - etcd2-data:/etcd-data
-    networks:
-      - patroni-net
     healthcheck:
       test: ["CMD", "etcdctl", "endpoint", "health"]
       interval: 10s
@@ -55,37 +52,45 @@ services:
     container_name: patroni2
     hostname: patroni2
     restart: unless-stopped
-    ports:
-      - "${POSTGRES_PORT:-5432}:5432"
-      - "${PATRONI_API_PORT:-8008}:8008"
+    network_mode: host # Use host network so Patroni sees VM IP, not container IP
+    # ports not needed with network_mode: host (container uses host ports directly)
+    extra_hosts:
+      - "patroni2:${NODE2_IP}" # Ensure hostname resolves to VM IP
     environment:
+      # Disable cloud provider auto-detection (prevents 169.254.169.254 timeout)
+      - SPILO_PROVIDER=local
+      - AWS_REGION=
+      - CALLBACK_SCRIPT=
+      # Force IP address (bypasses hostname resolution in configure_spilo.py)
+      - POD_IP=${NODE2_IP}
+
       # Spilo/Patroni settings
       - SCOPE=postgres-ha
       - PGVERSION=16
       - PGROOT=/home/postgres/pgdata/pgroot
       - PGDATA=/home/postgres/pgdata/pgroot/data
       - PGLOG=/home/postgres/pgdata/pgroot/pg_log
-      
+
       # Patroni settings
       - PATRONI_SCOPE=postgres-ha
       - PATRONI_NAME=patroni2
       - PATRONI_RESTAPI_LISTEN=0.0.0.0:8008
-      - PATRONI_RESTAPI_CONNECT_ADDRESS=${NODE2_IP:-127.0.0.1}:8008
+      - PATRONI_RESTAPI_CONNECT_ADDRESS=${NODE2_IP}:8008
       - PATRONI_POSTGRESQL_LISTEN=0.0.0.0:5432
-      - PATRONI_POSTGRESQL_CONNECT_ADDRESS=${NODE2_IP:-127.0.0.1}:5432
+      - PATRONI_POSTGRESQL_CONNECT_ADDRESS=${NODE2_IP}:5432
       - PATRONI_POSTGRESQL_DATA_DIR=/home/postgres/pgdata/pgroot/data
-      
-      # etcd DCS configuration
-      - PATRONI_ETCD3_HOSTS=${NODE1_IP:-127.0.0.1}:2379,${NODE2_IP:-127.0.0.1}:2379,${NODE3_IP:-127.0.0.1}:2379
-      
+
+      # etcd DCS configuration (must use actual VM IPs, not localhost)
+      - PATRONI_ETCD3_HOSTS=${NODE1_IP}:2379,${NODE2_IP}:2379,${NODE3_IP}:2379
+
       # PostgreSQL superuser
       - PATRONI_SUPERUSER_USERNAME=postgres
       - PATRONI_SUPERUSER_PASSWORD=${POSTGRES_PASSWORD:-postgres}
-      
+
       # Replication user
       - PATRONI_REPLICATION_USERNAME=replicator
       - PATRONI_REPLICATION_PASSWORD=${REPLICATION_PASSWORD:-replicator}
-      
+
       # Additional settings
       - PATRONI_POSTGRESQL_PARAMETERS_MAX_CONNECTIONS=200
       - PATRONI_POSTGRESQL_PARAMETERS_SHARED_BUFFERS=256MB
@@ -93,15 +98,14 @@ services:
       - PATRONI_POSTGRESQL_PARAMETERS_HOT_STANDBY=on
       - PATRONI_POSTGRESQL_PARAMETERS_MAX_WAL_SENDERS=10
       - PATRONI_POSTGRESQL_PARAMETERS_MAX_REPLICATION_SLOTS=10
-      
-      # Spilo-specific
-      - SPILO_CONFIGURATION='{"bootstrap":{"dcs":{"ttl":30,"loop_wait":10,"retry_timeout":10,"maximum_lag_on_failover":1048576,"postgresql":{"use_pg_rewind":true,"use_slots":true}}}}'
+
+      # Spilo-specific (includes post_init to run Supabase init script on bootstrap)
+      - SPILO_CONFIGURATION={"bootstrap":{"dcs":{"ttl":30,"loop_wait":10,"retry_timeout":10,"maximum_lag_on_failover":1048576,"postgresql":{"use_pg_rewind":true,"use_slots":true,"pg_hba":["local all all trust","host all all 0.0.0.0/0 md5","host all all ::0/0 md5","host replication replicator 0.0.0.0/0 md5"]}},"post_init":"/scripts/run-init.sh"}}
       - USE_WALG=false
       - ENABLE_WAL_PATH_COMPAT=true
     volumes:
       - patroni2-data:/home/postgres/pgdata
-    networks:
-      - patroni-net
+      - ./scripts:/scripts:ro
     depends_on:
       etcd2:
         condition: service_healthy
@@ -117,10 +121,3 @@ volumes:
     driver: local
   patroni2-data:
     driver: local
-
-networks:
-  patroni-net:
-    driver: bridge
-    ipam:
-      config:
-        - subnet: 172.28.0.0/16
