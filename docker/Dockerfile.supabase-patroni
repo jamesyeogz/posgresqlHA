@@ -1,0 +1,141 @@
+# =============================================================================
+# Supabase-Compatible PostgreSQL with Patroni (Spilo)
+# =============================================================================
+# This Dockerfile extends Zalando's Spilo image with Supabase extensions
+# Base image: ghcr.io/zalando/spilo-16:3.2-p2
+# 
+# Build: docker build -t supabase-patroni:latest -f docker/Dockerfile.supabase-patroni .
+# =============================================================================
+
+FROM ghcr.io/zalando/spilo-16:3.2-p2
+
+LABEL maintainer="PostgreSQL HA Project"
+LABEL description="Spilo (Patroni + PostgreSQL) with Supabase extensions"
+
+USER root
+
+# -----------------------------------------------------------------------------
+# Install build dependencies and Supabase extensions
+# -----------------------------------------------------------------------------
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    # Build tools
+    build-essential \
+    git \
+    ca-certificates \
+    curl \
+    wget \
+    # PostgreSQL development headers
+    postgresql-server-dev-16 \
+    libpq-dev \
+    # For pgsodium
+    libsodium-dev \
+    # For pgvector
+    pgxnclient \
+    # For http extension
+    libcurl4-openssl-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+# -----------------------------------------------------------------------------
+# Install pgvector (AI/ML vector similarity search)
+# -----------------------------------------------------------------------------
+RUN cd /tmp && \
+    git clone --branch v0.7.4 https://github.com/pgvector/pgvector.git && \
+    cd pgvector && \
+    make && \
+    make install && \
+    rm -rf /tmp/pgvector
+
+# -----------------------------------------------------------------------------
+# Install pgsodium (Encryption, required for Vault)
+# -----------------------------------------------------------------------------
+RUN cd /tmp && \
+    git clone --branch v3.1.9 https://github.com/michelp/pgsodium.git && \
+    cd pgsodium && \
+    make && \
+    make install && \
+    rm -rf /tmp/pgsodium
+
+# -----------------------------------------------------------------------------
+# Install pg_cron (Scheduled jobs)
+# -----------------------------------------------------------------------------
+RUN cd /tmp && \
+    git clone --branch v1.6.4 https://github.com/citusdata/pg_cron.git && \
+    cd pg_cron && \
+    make && \
+    make install && \
+    rm -rf /tmp/pg_cron
+
+# -----------------------------------------------------------------------------
+# Install http extension (HTTP client)
+# -----------------------------------------------------------------------------
+RUN cd /tmp && \
+    git clone --branch v1.6.0 https://github.com/pramsey/pgsql-http.git && \
+    cd pgsql-http && \
+    make && \
+    make install && \
+    rm -rf /tmp/pgsql-http
+
+# -----------------------------------------------------------------------------
+# Install pgjwt (JWT generation/verification)
+# -----------------------------------------------------------------------------
+RUN cd /tmp && \
+    git clone https://github.com/michelp/pgjwt.git && \
+    cd pgjwt && \
+    make install && \
+    rm -rf /tmp/pgjwt
+
+# -----------------------------------------------------------------------------
+# Install pg_hashids (Short unique IDs)
+# -----------------------------------------------------------------------------
+RUN cd /tmp && \
+    git clone https://github.com/iCyberon/pg_hashids.git && \
+    cd pg_hashids && \
+    make && \
+    make install && \
+    rm -rf /tmp/pg_hashids
+
+# -----------------------------------------------------------------------------
+# Install pg_jsonschema (JSON Schema validation)
+# -----------------------------------------------------------------------------
+# Note: pg_jsonschema requires Rust, so we'll skip it for now
+# It can be added later if needed
+
+# -----------------------------------------------------------------------------
+# Install pg_net (Async HTTP requests - Supabase extension)
+# -----------------------------------------------------------------------------
+# Note: pg_net requires specific Supabase build. For full compatibility,
+# consider using supabase/postgres image instead.
+# Skipping for now as it requires background worker setup
+
+# -----------------------------------------------------------------------------
+# Configure shared_preload_libraries for extensions that need it
+# -----------------------------------------------------------------------------
+# Note: pg_cron requires shared_preload_libraries = 'pg_cron'
+# This will be configured via Patroni environment variables
+
+# -----------------------------------------------------------------------------
+# Copy initialization scripts
+# -----------------------------------------------------------------------------
+COPY scripts/init-supabase-db.sql /docker-entrypoint-initdb.d/
+COPY scripts/run-init.sh /docker-entrypoint-initdb.d/
+
+RUN chmod +x /docker-entrypoint-initdb.d/run-init.sh 2>/dev/null || true
+
+# -----------------------------------------------------------------------------
+# Clean up
+# -----------------------------------------------------------------------------
+RUN apt-get remove -y \
+    build-essential \
+    git \
+    postgresql-server-dev-16 \
+    && apt-get autoremove -y \
+    && apt-get clean \
+    && rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/*
+
+USER postgres
+
+# Expose PostgreSQL and Patroni REST API ports
+EXPOSE 5432 8008
+
+# The entrypoint is inherited from Spilo base image
+

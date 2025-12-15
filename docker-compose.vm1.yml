@@ -45,10 +45,12 @@ services:
       start_period: 10s
 
   # ---------------------------------------------------------------------------
-  # Patroni - PostgreSQL HA Manager (using Zalando Spilo image)
+  # Patroni - PostgreSQL HA Manager (using custom Supabase-Patroni image)
+  # ---------------------------------------------------------------------------
+  # Build: docker build -t supabase-patroni:latest -f docker/Dockerfile.supabase-patroni .
   # ---------------------------------------------------------------------------
   patroni1:
-    image: ghcr.io/zalando/spilo-16:3.2-p2
+    image: ${PATRONI_IMAGE:-supabase-patroni:latest}
     container_name: patroni1
     hostname: patroni1
     restart: unless-stopped
@@ -100,7 +102,8 @@ services:
       - PATRONI_POSTGRESQL_PARAMETERS_MAX_REPLICATION_SLOTS=10
 
       # Spilo-specific (includes post_init to run Supabase init script on bootstrap)
-      - SPILO_CONFIGURATION={"bootstrap":{"dcs":{"ttl":30,"loop_wait":10,"retry_timeout":10,"maximum_lag_on_failover":1048576,"postgresql":{"use_pg_rewind":true,"use_slots":true,"pg_hba":["local all all trust","host all all 0.0.0.0/0 md5","host all all ::0/0 md5","host replication replicator 0.0.0.0/0 md5"]}},"post_init":"/scripts/run-init.sh"}}
+      # shared_preload_libraries includes pg_cron for scheduled jobs
+      - SPILO_CONFIGURATION={"bootstrap":{"dcs":{"ttl":30,"loop_wait":10,"retry_timeout":10,"maximum_lag_on_failover":1048576,"postgresql":{"use_pg_rewind":true,"use_slots":true,"parameters":{"shared_preload_libraries":"pg_cron,pg_stat_statements"},"pg_hba":["local all all trust","host all all 0.0.0.0/0 md5","host all all ::0/0 md5","host replication replicator 0.0.0.0/0 md5"]}},"post_init":"/scripts/run-init.sh"}}
       - USE_WALG=false
       - ENABLE_WAL_PATH_COMPAT=true
     volumes:

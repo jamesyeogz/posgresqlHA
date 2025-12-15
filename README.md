@@ -47,6 +47,57 @@ A production-ready PostgreSQL High Availability cluster using Patroni (Spilo) wi
 
 ## Quick Start
 
+### 0. Build the Custom Docker Image (Required First)
+
+The cluster uses a custom Docker image with Supabase extensions. Build it before deploying:
+
+**Linux/macOS:**
+
+```bash
+# Build the custom Supabase-Patroni image
+chmod +x docker/build.sh
+./docker/build.sh
+
+# Or with custom tag
+./docker/build.sh supabase-patroni:v1.0
+```
+
+**Windows PowerShell:**
+
+```powershell
+# Build the custom Supabase-Patroni image
+.\docker\build.ps1
+
+# Or with custom tag
+.\docker\build.ps1 -Tag "supabase-patroni:v1.0"
+```
+
+**Transfer image to all VMs:**
+
+```bash
+# Save image to file
+docker save supabase-patroni:latest -o supabase-patroni.tar
+
+# Copy to other VMs (use scp, rsync, etc.)
+scp supabase-patroni.tar user@vm2:/path/
+scp supabase-patroni.tar user@vm3:/path/
+
+# Load on each VM
+docker load -i supabase-patroni.tar
+```
+
+**Or use a registry:**
+
+```bash
+# Tag and push to your registry
+docker tag supabase-patroni:latest your-registry.com/supabase-patroni:latest
+docker push your-registry.com/supabase-patroni:latest
+
+# On each VM, pull the image
+docker pull your-registry.com/supabase-patroni:latest
+docker tag your-registry.com/supabase-patroni:latest supabase-patroni:latest
+```
+
 ### 1. Set Environment Variables (on each VM)
 
 **VM1:**
@@ -108,6 +159,30 @@ Expected output:
 +-----------+--------------+---------+---------+----+-----------+
 ```
 
+## Supabase Extensions
+
+The custom Docker image includes these PostgreSQL extensions for Supabase:
+
+| Extension            | Purpose                     | Status       |
+| -------------------- | --------------------------- | ------------ |
+| `uuid-ossp`          | UUID generation             | ✅ Core      |
+| `pgcrypto`           | Cryptographic functions     | ✅ Core      |
+| `pg_stat_statements` | Query monitoring            | ✅ Core      |
+| `pgjwt`              | JWT token generation (Auth) | ✅ Installed |
+| `pgsodium`           | Encryption (Vault)          | ✅ Installed |
+| `pgvector`           | AI/ML vector search         | ✅ Installed |
+| `pg_cron`            | Scheduled jobs              | ✅ Installed |
+| `http`               | HTTP client                 | ✅ Installed |
+| `pg_hashids`         | Short unique IDs            | ✅ Installed |
+| `pg_graphql`         | GraphQL API                 | ⚠️ Optional  |
+| `pg_net`             | Async HTTP                  | ⚠️ Optional  |
+
+**Verify installed extensions:**
+
+```bash
+docker exec patroni1 psql -U postgres -c "SELECT * FROM pg_available_extensions WHERE name IN ('pgvector', 'pgsodium', 'pgjwt', 'pg_cron', 'http');"
+```
+
 ## Supabase Database Initialization
 
 The Supabase init script (`scripts/init-supabase-db.sql`) runs automatically when the cluster bootstraps for the first time. It creates:
@@ -117,6 +192,7 @@ The Supabase init script (`scripts/init-supabase-db.sql`) runs automatically whe
 - Core tables: `auth.users`, `auth.sessions`, `storage.buckets`, etc.
 - Helper functions: `auth.uid()`, `auth.role()`, `auth.email()`
 - Row Level Security (RLS) policies
+- All Supabase extensions (pgjwt, pgsodium, pgvector, pg_cron, http, etc.)
 
 ### Manual Initialization (if needed)
 
@@ -381,13 +457,20 @@ docker volume rm $(docker volume ls -q | grep etcd)
 
 ## Environment Variables Reference
 
-| Variable               | Description                   | Required |
-| ---------------------- | ----------------------------- | -------- |
-| `NODE1_IP`             | IP address of VM1             | Yes      |
-| `NODE2_IP`             | IP address of VM2             | Yes      |
-| `NODE3_IP`             | IP address of VM3             | Yes      |
-| `POSTGRES_PASSWORD`    | PostgreSQL superuser password | Yes      |
-| `REPLICATION_PASSWORD` | Replication user password     | Yes      |
+| Variable               | Description                   | Required | Default                   |
+| ---------------------- | ----------------------------- | -------- | ------------------------- |
+| `NODE1_IP`             | IP address of VM1             | Yes      | -                         |
+| `NODE2_IP`             | IP address of VM2             | Yes      | -                         |
+| `NODE3_IP`             | IP address of VM3             | Yes      | -                         |
+| `POSTGRES_PASSWORD`    | PostgreSQL superuser password | Yes      | -                         |
+| `REPLICATION_PASSWORD` | Replication user password     | Yes      | -                         |
+| `PATRONI_IMAGE`        | Custom Patroni Docker image   | No       | `supabase-patroni:latest` |
+
+**To use original Spilo image (without Supabase extensions):**
+
+```bash
+export PATRONI_IMAGE=ghcr.io/zalando/spilo-16:3.2-p2
+```
 
 ## Security Notes
 

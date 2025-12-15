@@ -19,11 +19,17 @@ DO $$
 DECLARE
     missing_extensions TEXT[] := ARRAY[]::TEXT[];
     ext TEXT;
+    -- Core required extensions (available in standard PostgreSQL)
     required_extensions TEXT[] := ARRAY[
         'uuid-ossp', 'pgcrypto', 'pg_stat_statements'
     ];
+    -- Supabase-specific extensions (installed via custom Dockerfile)
+    supabase_extensions TEXT[] := ARRAY[
+        'pgjwt', 'pgsodium', 'pgvector', 'pg_cron', 'http', 'pg_hashids'
+    ];
+    -- Optional extensions (nice to have but not critical)
     optional_extensions TEXT[] := ARRAY[
-        'pgjwt', 'pg_graphql', 'pg_jsonschema', 'wrappers', 'vault'
+        'pg_graphql', 'pg_jsonschema', 'wrappers', 'vault', 'pg_net'
     ];
 BEGIN
     -- Check required extensions
@@ -34,6 +40,17 @@ BEGIN
             WHERE name = ext
         ) THEN
             missing_extensions := array_append(missing_extensions, ext);
+        END IF;
+    END LOOP;
+    
+    -- Check Supabase extensions (warn if missing)
+    FOREACH ext IN ARRAY supabase_extensions
+    LOOP
+        IF NOT EXISTS (
+            SELECT 1 FROM pg_available_extensions 
+            WHERE name = ext
+        ) THEN
+            RAISE WARNING 'Supabase extension % is not available - some features may not work', ext;
         END IF;
     END LOOP;
     
@@ -54,42 +71,100 @@ BEGIN
 END
 $$;
 
--- Install required extensions
+-- Install required extensions (standard PostgreSQL)
 CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
 CREATE EXTENSION IF NOT EXISTS "pgcrypto";
 CREATE EXTENSION IF NOT EXISTS "pg_stat_statements";
 
--- Install optional extensions (with error handling)
+-- Install Supabase extensions (from custom Dockerfile)
 DO $$
 BEGIN
+    -- pgjwt - JWT token generation/verification (required for Auth)
     BEGIN
         CREATE EXTENSION IF NOT EXISTS "pgjwt";
+        RAISE NOTICE 'Extension pgjwt installed successfully';
     EXCEPTION WHEN OTHERS THEN
         RAISE WARNING 'Failed to create pgjwt extension: %', SQLERRM;
     END;
     
+    -- pgsodium - Encryption (required for Vault)
+    BEGIN
+        CREATE EXTENSION IF NOT EXISTS "pgsodium";
+        RAISE NOTICE 'Extension pgsodium installed successfully';
+    EXCEPTION WHEN OTHERS THEN
+        RAISE WARNING 'Failed to create pgsodium extension: %', SQLERRM;
+    END;
+    
+    -- pgvector - Vector similarity search (for AI/ML features)
+    BEGIN
+        CREATE EXTENSION IF NOT EXISTS "vector";
+        RAISE NOTICE 'Extension vector (pgvector) installed successfully';
+    EXCEPTION WHEN OTHERS THEN
+        RAISE WARNING 'Failed to create vector extension: %', SQLERRM;
+    END;
+    
+    -- pg_cron - Scheduled jobs
+    BEGIN
+        CREATE EXTENSION IF NOT EXISTS "pg_cron";
+        RAISE NOTICE 'Extension pg_cron installed successfully';
+    EXCEPTION WHEN OTHERS THEN
+        RAISE WARNING 'Failed to create pg_cron extension: %', SQLERRM;
+    END;
+    
+    -- http - HTTP client extension
+    BEGIN
+        CREATE EXTENSION IF NOT EXISTS "http";
+        RAISE NOTICE 'Extension http installed successfully';
+    EXCEPTION WHEN OTHERS THEN
+        RAISE WARNING 'Failed to create http extension: %', SQLERRM;
+    END;
+    
+    -- pg_hashids - Short unique IDs
+    BEGIN
+        CREATE EXTENSION IF NOT EXISTS "pg_hashids";
+        RAISE NOTICE 'Extension pg_hashids installed successfully';
+    EXCEPTION WHEN OTHERS THEN
+        RAISE WARNING 'Failed to create pg_hashids extension: %', SQLERRM;
+    END;
+END
+$$;
+
+-- Install optional extensions (may not be available)
+DO $$
+BEGIN
     BEGIN
         CREATE EXTENSION IF NOT EXISTS "pg_graphql";
+        RAISE NOTICE 'Extension pg_graphql installed successfully';
     EXCEPTION WHEN OTHERS THEN
         RAISE WARNING 'Failed to create pg_graphql extension: %', SQLERRM;
     END;
     
     BEGIN
         CREATE EXTENSION IF NOT EXISTS "pg_jsonschema";
+        RAISE NOTICE 'Extension pg_jsonschema installed successfully';
     EXCEPTION WHEN OTHERS THEN
         RAISE WARNING 'Failed to create pg_jsonschema extension: %', SQLERRM;
     END;
     
     BEGIN
         CREATE EXTENSION IF NOT EXISTS "wrappers";
+        RAISE NOTICE 'Extension wrappers installed successfully';
     EXCEPTION WHEN OTHERS THEN
         RAISE WARNING 'Failed to create wrappers extension: %', SQLERRM;
     END;
     
     BEGIN
         CREATE EXTENSION IF NOT EXISTS "vault";
+        RAISE NOTICE 'Extension vault installed successfully';
     EXCEPTION WHEN OTHERS THEN
         RAISE WARNING 'Failed to create vault extension: %', SQLERRM;
+    END;
+    
+    BEGIN
+        CREATE EXTENSION IF NOT EXISTS "pg_net";
+        RAISE NOTICE 'Extension pg_net installed successfully';
+    EXCEPTION WHEN OTHERS THEN
+        RAISE WARNING 'Failed to create pg_net extension: %', SQLERRM;
     END;
 END
 $$;
