@@ -108,7 +108,7 @@ services:
       - ENABLE_WAL_PATH_COMPAT=true
     volumes:
       - patroni3-data:/home/postgres/pgdata
-      - ./scripts:/scripts:ro
+      # Scripts are now embedded in the Docker image (no mount needed)
     depends_on:
       etcd3:
         condition: service_healthy

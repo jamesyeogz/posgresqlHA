@@ -114,12 +114,13 @@ export REPLICATION_PASSWORD=your_replication_password
 
 ### 2. Copy Files to Each VM
 
-Copy these files/folders to each VM:
+Copy these files to each VM:
 
 - `docker-compose.vm1.yml` → VM1
 - `docker-compose.vm2.yml` → VM2
 - `docker-compose.vm3.yml` → VM3
-- `scripts/` folder → All VMs
+
+> **Note:** The `scripts/` folder is no longer needed on VMs - scripts are embedded in the Docker image.
 
 ### 3. Start the Cluster
 
