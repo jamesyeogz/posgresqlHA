@@ -1,0 +1,267 @@
+# =============================================================================
+# 3-Node PostgreSQL HA Cluster (Single Machine)
+# =============================================================================
+# Full 3-node etcd + Patroni cluster for testing on a single machine
+#
+# Usage:
+#   docker compose -f docker-compose.3node.yml up -d
+#
+# Ports:
+#   - PostgreSQL: 5432 (primary), 5433, 5434
+#   - Patroni API: 8008, 8009, 8010
+#   - etcd: 2379, 2381, 2383
+# =============================================================================
+
+services:
+  # ---------------------------------------------------------------------------
+  # etcd cluster (3 nodes)
+  # ---------------------------------------------------------------------------
+  etcd1:
+    image: quay.io/coreos/etcd:v3.5.11
+    container_name: etcd1
+    hostname: etcd1
+    restart: unless-stopped
+    environment:
+      - ETCD_NAME=etcd1
+      - ETCD_DATA_DIR=/etcd-data
+      - ETCD_LISTEN_CLIENT_URLS=http://0.0.0.0:2379
+      - ETCD_ADVERTISE_CLIENT_URLS=http://etcd1:2379
+      - ETCD_LISTEN_PEER_URLS=http://0.0.0.0:2380
+      - ETCD_INITIAL_ADVERTISE_PEER_URLS=http://etcd1:2380
+      - ETCD_INITIAL_CLUSTER=etcd1=http://etcd1:2380,etcd2=http://etcd2:2380,etcd3=http://etcd3:2380
+      - ETCD_INITIAL_CLUSTER_TOKEN=etcd-cluster-token
+      - ETCD_INITIAL_CLUSTER_STATE=new
+      - ETCD_ENABLE_V2=true
+    volumes:
+      - etcd1-data:/etcd-data
+    healthcheck:
+      test: ["CMD", "etcdctl", "endpoint", "health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    networks:
+      - patroni-cluster
+
+  etcd2:
+    image: quay.io/coreos/etcd:v3.5.11
+    container_name: etcd2
+    hostname: etcd2
+    restart: unless-stopped
+    environment:
+      - ETCD_NAME=etcd2
+      - ETCD_DATA_DIR=/etcd-data
+      - ETCD_LISTEN_CLIENT_URLS=http://0.0.0.0:2379
+      - ETCD_ADVERTISE_CLIENT_URLS=http://etcd2:2379
+      - ETCD_LISTEN_PEER_URLS=http://0.0.0.0:2380
+      - ETCD_INITIAL_ADVERTISE_PEER_URLS=http://etcd2:2380
+      - ETCD_INITIAL_CLUSTER=etcd1=http://etcd1:2380,etcd2=http://etcd2:2380,etcd3=http://etcd3:2380
+      - ETCD_INITIAL_CLUSTER_TOKEN=etcd-cluster-token
+      - ETCD_INITIAL_CLUSTER_STATE=new
+      - ETCD_ENABLE_V2=true
+    volumes:
+      - etcd2-data:/etcd-data
+    healthcheck:
+      test: ["CMD", "etcdctl", "endpoint", "health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    networks:
+      - patroni-cluster
+
+  etcd3:
+    image: quay.io/coreos/etcd:v3.5.11
+    container_name: etcd3
+    hostname: etcd3
+    restart: unless-stopped
+    environment:
+      - ETCD_NAME=etcd3
+      - ETCD_DATA_DIR=/etcd-data
+      - ETCD_LISTEN_CLIENT_URLS=http://0.0.0.0:2379
+      - ETCD_ADVERTISE_CLIENT_URLS=http://etcd3:2379
+      - ETCD_LISTEN_PEER_URLS=http://0.0.0.0:2380
+      - ETCD_INITIAL_ADVERTISE_PEER_URLS=http://etcd3:2380
+      - ETCD_INITIAL_CLUSTER=etcd1=http://etcd1:2380,etcd2=http://etcd2:2380,etcd3=http://etcd3:2380
+      - ETCD_INITIAL_CLUSTER_TOKEN=etcd-cluster-token
+      - ETCD_INITIAL_CLUSTER_STATE=new
+      - ETCD_ENABLE_V2=true
+    volumes:
+      - etcd3-data:/etcd-data
+    healthcheck:
+      test: ["CMD", "etcdctl", "endpoint", "health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    networks:
+      - patroni-cluster
+
+  # ---------------------------------------------------------------------------
+  # Patroni cluster (3 nodes)
+  # ---------------------------------------------------------------------------
+  patroni1:
+    image: ${PATRONI_IMAGE:-supabase-patroni:latest}
+    container_name: patroni1
+    hostname: patroni1
+    restart: unless-stopped
+    ports:
+      - "5432:5432"
+      - "8008:8008"
+    environment:
+      - SPILO_PROVIDER=local
+      - AWS_REGION=
+      - CALLBACK_SCRIPT=
+      # Disable internal etcd - use external cluster
+      - ETCD_HOSTS=etcd1:2379,etcd2:2379,etcd3:2379
+      - SCOPE=postgres-ha
+      - PGVERSION=16
+      - PATRONI_SCOPE=postgres-ha
+      - PATRONI_NAME=patroni1
+      - PATRONI_RESTAPI_LISTEN=0.0.0.0:8008
+      - PATRONI_RESTAPI_CONNECT_ADDRESS=patroni1:8008
+      - PATRONI_POSTGRESQL_LISTEN=0.0.0.0:5432
+      - PATRONI_POSTGRESQL_CONNECT_ADDRESS=patroni1:5432
+      - PATRONI_ETCD3_HOSTS=etcd1:2379,etcd2:2379,etcd3:2379
+      - PATRONI_SUPERUSER_USERNAME=postgres
+      - PATRONI_SUPERUSER_PASSWORD=${POSTGRES_PASSWORD:-postgres}
+      - PATRONI_REPLICATION_USERNAME=replicator
+      - PATRONI_REPLICATION_PASSWORD=${REPLICATION_PASSWORD:-replicator}
+      - PATRONI_POSTGRESQL_PARAMETERS_MAX_CONNECTIONS=200
+      - PATRONI_POSTGRESQL_PARAMETERS_SHARED_BUFFERS=256MB
+      - PATRONI_POSTGRESQL_PARAMETERS_WAL_LEVEL=replica
+      - PATRONI_POSTGRESQL_PARAMETERS_HOT_STANDBY=on
+      - PATRONI_POSTGRESQL_PARAMETERS_MAX_WAL_SENDERS=10
+      - PATRONI_POSTGRESQL_PARAMETERS_MAX_REPLICATION_SLOTS=10
+      - SPILO_CONFIGURATION={"bootstrap":{"dcs":{"ttl":30,"loop_wait":10,"retry_timeout":10,"maximum_lag_on_failover":1048576,"postgresql":{"use_pg_rewind":true,"use_slots":true,"pg_hba":["local all all trust","host all all 0.0.0.0/0 md5","host all all ::0/0 md5","host replication replicator 0.0.0.0/0 md5"]}},"post_init":"/scripts/run-init.sh"}}
+      - USE_WALG=false
+      - ENABLE_WAL_PATH_COMPAT=true
+    volumes:
+      - patroni1-data:/home/postgres/pgdata
+    depends_on:
+      etcd1:
+        condition: service_healthy
+      etcd2:
+        condition: service_healthy
+      etcd3:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 60s
+    networks:
+      - patroni-cluster
+
+  patroni2:
+    image: ${PATRONI_IMAGE:-supabase-patroni:latest}
+    container_name: patroni2
+    hostname: patroni2
+    restart: unless-stopped
+    ports:
+      - "5433:5432"
+      - "8009:8008"
+    environment:
+      - SPILO_PROVIDER=local
+      - AWS_REGION=
+      - CALLBACK_SCRIPT=
+      # Disable internal etcd - use external cluster
+      - ETCD_HOSTS=etcd1:2379,etcd2:2379,etcd3:2379
+      - SCOPE=postgres-ha
+      - PGVERSION=16
+      - PATRONI_SCOPE=postgres-ha
+      - PATRONI_NAME=patroni2
+      - PATRONI_RESTAPI_LISTEN=0.0.0.0:8008
+      - PATRONI_RESTAPI_CONNECT_ADDRESS=patroni2:8008
+      - PATRONI_POSTGRESQL_LISTEN=0.0.0.0:5432
+      - PATRONI_POSTGRESQL_CONNECT_ADDRESS=patroni2:5432
+      - PATRONI_ETCD3_HOSTS=etcd1:2379,etcd2:2379,etcd3:2379
+      - PATRONI_SUPERUSER_USERNAME=postgres
+      - PATRONI_SUPERUSER_PASSWORD=${POSTGRES_PASSWORD:-postgres}
+      - PATRONI_REPLICATION_USERNAME=replicator
+      - PATRONI_REPLICATION_PASSWORD=${REPLICATION_PASSWORD:-replicator}
+      - PATRONI_POSTGRESQL_PARAMETERS_MAX_CONNECTIONS=200
+      - PATRONI_POSTGRESQL_PARAMETERS_SHARED_BUFFERS=256MB
+      - PATRONI_POSTGRESQL_PARAMETERS_WAL_LEVEL=replica
+      - PATRONI_POSTGRESQL_PARAMETERS_HOT_STANDBY=on
+      - PATRONI_POSTGRESQL_PARAMETERS_MAX_WAL_SENDERS=10
+      - PATRONI_POSTGRESQL_PARAMETERS_MAX_REPLICATION_SLOTS=10
+      - SPILO_CONFIGURATION={"bootstrap":{"dcs":{"ttl":30,"loop_wait":10,"retry_timeout":10,"maximum_lag_on_failover":1048576,"postgresql":{"use_pg_rewind":true,"use_slots":true,"pg_hba":["local all all trust","host all all 0.0.0.0/0 md5","host all all ::0/0 md5","host replication replicator 0.0.0.0/0 md5"]}}}}
+      - USE_WALG=false
+      - ENABLE_WAL_PATH_COMPAT=true
+    volumes:
+      - patroni2-data:/home/postgres/pgdata
+    depends_on:
+      patroni1:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 60s
+    networks:
+      - patroni-cluster
+
+  patroni3:
+    image: ${PATRONI_IMAGE:-supabase-patroni:latest}
+    container_name: patroni3
+    hostname: patroni3
+    restart: unless-stopped
+    ports:
+      - "5434:5432"
+      - "8010:8008"
+    environment:
+      - SPILO_PROVIDER=local
+      - AWS_REGION=
+      - CALLBACK_SCRIPT=
+      # Disable internal etcd - use external cluster
+      - ETCD_HOSTS=etcd1:2379,etcd2:2379,etcd3:2379
+      - SCOPE=postgres-ha
+      - PGVERSION=16
+      - PATRONI_SCOPE=postgres-ha
+      - PATRONI_NAME=patroni3
+      - PATRONI_RESTAPI_LISTEN=0.0.0.0:8008
+      - PATRONI_RESTAPI_CONNECT_ADDRESS=patroni3:8008
+      - PATRONI_POSTGRESQL_LISTEN=0.0.0.0:5432
+      - PATRONI_POSTGRESQL_CONNECT_ADDRESS=patroni3:5432
+      - PATRONI_ETCD3_HOSTS=etcd1:2379,etcd2:2379,etcd3:2379
+      - PATRONI_SUPERUSER_USERNAME=postgres
+      - PATRONI_SUPERUSER_PASSWORD=${POSTGRES_PASSWORD:-postgres}
+      - PATRONI_REPLICATION_USERNAME=replicator
+      - PATRONI_REPLICATION_PASSWORD=${REPLICATION_PASSWORD:-replicator}
+      - PATRONI_POSTGRESQL_PARAMETERS_MAX_CONNECTIONS=200
+      - PATRONI_POSTGRESQL_PARAMETERS_SHARED_BUFFERS=256MB
+      - PATRONI_POSTGRESQL_PARAMETERS_WAL_LEVEL=replica
+      - PATRONI_POSTGRESQL_PARAMETERS_HOT_STANDBY=on
+      - PATRONI_POSTGRESQL_PARAMETERS_MAX_WAL_SENDERS=10
+      - PATRONI_POSTGRESQL_PARAMETERS_MAX_REPLICATION_SLOTS=10
+      - SPILO_CONFIGURATION={"bootstrap":{"dcs":{"ttl":30,"loop_wait":10,"retry_timeout":10,"maximum_lag_on_failover":1048576,"postgresql":{"use_pg_rewind":true,"use_slots":true,"pg_hba":["local all all trust","host all all 0.0.0.0/0 md5","host all all ::0/0 md5","host replication replicator 0.0.0.0/0 md5"]}}}}
+      - USE_WALG=false
+      - ENABLE_WAL_PATH_COMPAT=true
+    volumes:
+      - patroni3-data:/home/postgres/pgdata
+    depends_on:
+      patroni1:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 60s
+    networks:
+      - patroni-cluster
+
+networks:
+  patroni-cluster:
+    driver: bridge
+
+volumes:
+  etcd1-data:
+  etcd2-data:
+  etcd3-data:
+  patroni1-data:
+  patroni2-data:
+  patroni3-data:
