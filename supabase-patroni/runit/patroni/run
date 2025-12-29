@@ -1,0 +1,46 @@
+#!/bin/sh -e
+# =============================================================================
+# Patroni Service Runner (runit)
+# This script is executed by runit to start and manage Patroni
+# Based on Zalando Spilo's approach
+# =============================================================================
+
+# Make patroni process real-time priority if we have enough permissions
+CHRT="chrt -Rr 99"
+if ! $CHRT true 2> /dev/null; then
+    CHRT=""
+fi
+
+# Run as postgres user if possible
+CHPST="chpst -u postgres"
+if ! $CHPST true 2> /dev/null; then
+    CHPST=""
+fi
+
+# Exclude shared memory from coredump
+if ! echo 0x31 > /proc/self/coredump_filter 2>/dev/null; then
+    echo "Notice: Could not set coredump filter"
+fi
+
+# Enable core dumps for debugging
+if ! ulimit -c unlimited 2>/dev/null; then
+    echo "Notice: Could not set unlimited coredump size"
+fi
+
+# Clean up environment - only keep necessary variables
+# This prevents accidentally leaking sensitive information
+ALLOWED_VARS="KUBERNETES_SERVICE|POD_IP|POD_NAMESPACE|HOSTNAME|PATH|PGHOME|PGVERSION|LC_ALL|LANG|RW_DIR|PATRONI_"
+
+for E in $(printenv -0 2>/dev/null | tr '\n' ' ' | sed 's/\x00/\n/g' 2>/dev/null | grep -vE "^($ALLOWED_VARS)" | sed 's/=.*//g' 2>/dev/null || true); do
+    unset "$E" 2>/dev/null || true
+done
+
+# Redirect stderr to stdout for logging
+exec 2>&1
+
+# Get configuration file path
+PATRONI_CONFIG=${PATRONI_CONFIG:-/run/patroni.yml}
+
+# Start Patroni
+echo "Starting Patroni with config: $PATRONI_CONFIG"
+exec $CHRT $CHPST env HOME=/home/postgres patroni "$PATRONI_CONFIG"

@@ -1,0 +1,10 @@
+#!/bin/sh
+# =============================================================================
+# Patroni Service Finish Script (runit)
+# This script is executed when Patroni stops
+# =============================================================================
+
+echo "Patroni service stopped with exit code: $1"
+
+# Wait a bit before allowing restart to prevent rapid restart loops
+sleep 1
