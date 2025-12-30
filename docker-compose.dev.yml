@@ -1,47 +1,44 @@
-version: "3.9"
-
 # =============================================================================
-# Single-Host Development Setup
+# Supabase-Patroni HA Development Setup
 # =============================================================================
-# This compose file runs the entire HA cluster on a SINGLE machine for testing
-# All services run with different ports to avoid conflicts
+# PostgreSQL HA cluster using official Supabase image + Patroni + etcd
 #
 # Ports:
-#   etcd:       2379, 2381, 2383 (client) | 2380, 2382, 2384 (peer)
-#   PostgreSQL: 5432, 5433, 5434
-#   Patroni:    8008, 8009, 8010
 #   HAProxy:    5000 (primary), 5001 (replica), 7000 (stats)
+#   PostgreSQL: 5432, 5433, 5434 (direct access)
+#   Patroni:    8008, 8009, 8010 (REST API)
+#   etcd:       2379 (client)
 #
-# Usage: docker-compose -f docker-compose.dev.yml up -d
+# Build & Start:
+#   docker build -t supabase-patroni:latest -f docker/Dockerfile.supabase-patroni docker/
+#   docker-compose -f docker-compose.dev.yml up -d
 # =============================================================================
+
+name: supabase-patroni
 
 services:
   # ---------------------------------------------------------------------------
-  # etcd Cluster (3 nodes)
+  # etcd Cluster (3 nodes for consensus)
   # ---------------------------------------------------------------------------
   etcd1:
     image: quay.io/coreos/etcd:v3.5.11
     container_name: etcd1
     hostname: etcd1
     restart: unless-stopped
-    ports:
-      - "2379:2379"
-      - "2380:2380"
     environment:
-      - ETCD_NAME=etcd1
-      - ETCD_DATA_DIR=/etcd-data
-      - ETCD_LISTEN_CLIENT_URLS=http://0.0.0.0:2379
-      - ETCD_ADVERTISE_CLIENT_URLS=http://etcd1:2379
-      - ETCD_LISTEN_PEER_URLS=http://0.0.0.0:2380
-      - ETCD_INITIAL_ADVERTISE_PEER_URLS=http://etcd1:2380
-      - ETCD_INITIAL_CLUSTER=etcd1=http://etcd1:2380,etcd2=http://etcd2:2380,etcd3=http://etcd3:2380
-      - ETCD_INITIAL_CLUSTER_TOKEN=etcd-patroni-cluster
-      - ETCD_INITIAL_CLUSTER_STATE=new
-      - ETCD_ENABLE_V2=true
+      ETCD_NAME: etcd1
+      ETCD_DATA_DIR: /etcd-data
+      ETCD_LISTEN_CLIENT_URLS: http://0.0.0.0:2379
+      ETCD_ADVERTISE_CLIENT_URLS: http://etcd1:2379
+      ETCD_LISTEN_PEER_URLS: http://0.0.0.0:2380
+      ETCD_INITIAL_ADVERTISE_PEER_URLS: http://etcd1:2380
+      ETCD_INITIAL_CLUSTER: etcd1=http://etcd1:2380,etcd2=http://etcd2:2380,etcd3=http://etcd3:2380
+      ETCD_INITIAL_CLUSTER_TOKEN: supabase-patroni-cluster
+      ETCD_INITIAL_CLUSTER_STATE: new
     volumes:
       - etcd1-data:/etcd-data
     networks:
-      - patroni-dev
+      - supabase-ha
     healthcheck:
       test: ["CMD", "etcdctl", "endpoint", "health"]
       interval: 10s
@@ -53,24 +50,20 @@ services:
     container_name: etcd2
     hostname: etcd2
     restart: unless-stopped
-    ports:
-      - "2381:2379"
-      - "2382:2380"
     environment:
-      - ETCD_NAME=etcd2
-      - ETCD_DATA_DIR=/etcd-data
-      - ETCD_LISTEN_CLIENT_URLS=http://0.0.0.0:2379
-      - ETCD_ADVERTISE_CLIENT_URLS=http://etcd2:2379
-      - ETCD_LISTEN_PEER_URLS=http://0.0.0.0:2380
-      - ETCD_INITIAL_ADVERTISE_PEER_URLS=http://etcd2:2380
-      - ETCD_INITIAL_CLUSTER=etcd1=http://etcd1:2380,etcd2=http://etcd2:2380,etcd3=http://etcd3:2380
-      - ETCD_INITIAL_CLUSTER_TOKEN=etcd-patroni-cluster
-      - ETCD_INITIAL_CLUSTER_STATE=new
-      - ETCD_ENABLE_V2=true
+      ETCD_NAME: etcd2
+      ETCD_DATA_DIR: /etcd-data
+      ETCD_LISTEN_CLIENT_URLS: http://0.0.0.0:2379
+      ETCD_ADVERTISE_CLIENT_URLS: http://etcd2:2379
+      ETCD_LISTEN_PEER_URLS: http://0.0.0.0:2380
+      ETCD_INITIAL_ADVERTISE_PEER_URLS: http://etcd2:2380
+      ETCD_INITIAL_CLUSTER: etcd1=http://etcd1:2380,etcd2=http://etcd2:2380,etcd3=http://etcd3:2380
+      ETCD_INITIAL_CLUSTER_TOKEN: supabase-patroni-cluster
+      ETCD_INITIAL_CLUSTER_STATE: new
     volumes:
       - etcd2-data:/etcd-data
     networks:
-      - patroni-dev
+      - supabase-ha
     healthcheck:
       test: ["CMD", "etcdctl", "endpoint", "health"]
       interval: 10s
@@ -82,24 +75,20 @@ services:
     container_name: etcd3
     hostname: etcd3
     restart: unless-stopped
-    ports:
-      - "2383:2379"
-      - "2384:2380"
     environment:
-      - ETCD_NAME=etcd3
-      - ETCD_DATA_DIR=/etcd-data
-      - ETCD_LISTEN_CLIENT_URLS=http://0.0.0.0:2379
-      - ETCD_ADVERTISE_CLIENT_URLS=http://etcd3:2379
-      - ETCD_LISTEN_PEER_URLS=http://0.0.0.0:2380
-      - ETCD_INITIAL_ADVERTISE_PEER_URLS=http://etcd3:2380
-      - ETCD_INITIAL_CLUSTER=etcd1=http://etcd1:2380,etcd2=http://etcd2:2380,etcd3=http://etcd3:2380
-      - ETCD_INITIAL_CLUSTER_TOKEN=etcd-patroni-cluster
-      - ETCD_INITIAL_CLUSTER_STATE=new
-      - ETCD_ENABLE_V2=true
+      ETCD_NAME: etcd3
+      ETCD_DATA_DIR: /etcd-data
+      ETCD_LISTEN_CLIENT_URLS: http://0.0.0.0:2379
+      ETCD_ADVERTISE_CLIENT_URLS: http://etcd3:2379
+      ETCD_LISTEN_PEER_URLS: http://0.0.0.0:2380
+      ETCD_INITIAL_ADVERTISE_PEER_URLS: http://etcd3:2380
+      ETCD_INITIAL_CLUSTER: etcd1=http://etcd1:2380,etcd2=http://etcd2:2380,etcd3=http://etcd3:2380
+      ETCD_INITIAL_CLUSTER_TOKEN: supabase-patroni-cluster
+      ETCD_INITIAL_CLUSTER_STATE: new
     volumes:
       - etcd3-data:/etcd-data
     networks:
-      - patroni-dev
+      - supabase-ha
     healthcheck:
       test: ["CMD", "etcdctl", "endpoint", "health"]
       interval: 10s
@@ -107,10 +96,13 @@ services:
       retries: 5
 
   # ---------------------------------------------------------------------------
-  # Patroni/PostgreSQL Cluster (3 nodes)
+  # Patroni/PostgreSQL Cluster (3 nodes) - Supabase PostgreSQL
   # ---------------------------------------------------------------------------
   patroni1:
-    image: ghcr.io/zalando/spilo-16:3.2-p2
+    image: supabase-patroni:latest
+    build:
+      context: ./docker
+      dockerfile: Dockerfile.supabase-patroni
     container_name: patroni1
     hostname: patroni1
     restart: unless-stopped
@@ -118,25 +110,42 @@ services:
       - "5432:5432"
       - "8008:8008"
     environment:
-      - SCOPE=postgres-ha
-      - PGVERSION=16
-      - PATRONI_SCOPE=postgres-ha
-      - PATRONI_NAME=patroni1
-      - PATRONI_RESTAPI_LISTEN=0.0.0.0:8008
-      - PATRONI_RESTAPI_CONNECT_ADDRESS=patroni1:8008
-      - PATRONI_POSTGRESQL_LISTEN=0.0.0.0:5432
-      - PATRONI_POSTGRESQL_CONNECT_ADDRESS=patroni1:5432
-      - PATRONI_POSTGRESQL_DATA_DIR=/home/postgres/pgdata/pgroot/data
-      - PATRONI_ETCD3_HOSTS=etcd1:2379,etcd2:2379,etcd3:2379
-      - PATRONI_SUPERUSER_USERNAME=postgres
-      - PATRONI_SUPERUSER_PASSWORD=${POSTGRES_PASSWORD:-postgres}
-      - PATRONI_REPLICATION_USERNAME=replicator
-      - PATRONI_REPLICATION_PASSWORD=${REPLICATION_PASSWORD:-replicator}
-      - USE_WALG=false
+      # Patroni Configuration
+      PATRONI_SCOPE: supabase-ha
+      PATRONI_NAME: patroni1
+      PATRONI_RESTAPI_LISTEN: 0.0.0.0:8008
+      PATRONI_RESTAPI_CONNECT_ADDRESS: patroni1:8008
+      PATRONI_POSTGRESQL_LISTEN: 0.0.0.0:5432
+      PATRONI_POSTGRESQL_CONNECT_ADDRESS: patroni1:5432
+      PATRONI_POSTGRESQL_DATA_DIR: /home/postgres/pgdata/data
+      PATRONI_ETCD3_HOSTS: etcd1:2379,etcd2:2379,etcd3:2379
+      PATRONI_SUPERUSER_USERNAME: postgres
+      PATRONI_SUPERUSER_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+      PATRONI_REPLICATION_USERNAME: replicator
+      PATRONI_REPLICATION_PASSWORD: ${REPLICATION_PASSWORD:-replicator}
+      # Supabase Environment Variables (same as supabase-docker)
+      POSTGRES_HOST: /var/run/postgresql
+      PGPORT: ${POSTGRES_PORT:-5432}
+      POSTGRES_PORT: ${POSTGRES_PORT:-5432}
+      PGPASSWORD: ${POSTGRES_PASSWORD:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+      PGDATABASE: ${POSTGRES_DB:-postgres}
+      POSTGRES_DB: ${POSTGRES_DB:-postgres}
+      JWT_SECRET: ${JWT_SECRET:-super-secret-jwt-token-with-at-least-32-characters}
+      JWT_EXP: ${JWT_EXPIRY:-3600}
     volumes:
       - patroni1-data:/home/postgres/pgdata
+      # Mount Supabase init scripts from supabase-docker
+      - ./supabase-docker/volumes/db/realtime.sql:/docker-entrypoint-initdb.d/migrations/99-realtime.sql:ro
+      - ./supabase-docker/volumes/db/webhooks.sql:/docker-entrypoint-initdb.d/init-scripts/98-webhooks.sql:ro
+      - ./supabase-docker/volumes/db/roles.sql:/docker-entrypoint-initdb.d/init-scripts/99-roles.sql:ro
+      - ./supabase-docker/volumes/db/jwt.sql:/docker-entrypoint-initdb.d/init-scripts/99-jwt.sql:ro
+      - ./supabase-docker/volumes/db/_supabase.sql:/docker-entrypoint-initdb.d/migrations/97-_supabase.sql:ro
+      - ./supabase-docker/volumes/db/logs.sql:/docker-entrypoint-initdb.d/migrations/99-logs.sql:ro
+      - ./supabase-docker/volumes/db/pooler.sql:/docker-entrypoint-initdb.d/migrations/99-pooler.sql:ro
+      - db-config:/etc/postgresql-custom
     networks:
-      - patroni-dev
+      - supabase-ha
     depends_on:
       etcd1:
         condition: service_healthy
@@ -149,10 +158,10 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
-      start_period: 60s
+      start_period: 90s
 
   patroni2:
-    image: ghcr.io/zalando/spilo-16:3.2-p2
+    image: supabase-patroni:latest
     container_name: patroni2
     hostname: patroni2
     restart: unless-stopped
@@ -160,25 +169,32 @@ services:
       - "5433:5432"
       - "8009:8008"
     environment:
-      - SCOPE=postgres-ha
-      - PGVERSION=16
-      - PATRONI_SCOPE=postgres-ha
-      - PATRONI_NAME=patroni2
-      - PATRONI_RESTAPI_LISTEN=0.0.0.0:8008
-      - PATRONI_RESTAPI_CONNECT_ADDRESS=patroni2:8008
-      - PATRONI_POSTGRESQL_LISTEN=0.0.0.0:5432
-      - PATRONI_POSTGRESQL_CONNECT_ADDRESS=patroni2:5432
-      - PATRONI_POSTGRESQL_DATA_DIR=/home/postgres/pgdata/pgroot/data
-      - PATRONI_ETCD3_HOSTS=etcd1:2379,etcd2:2379,etcd3:2379
-      - PATRONI_SUPERUSER_USERNAME=postgres
-      - PATRONI_SUPERUSER_PASSWORD=${POSTGRES_PASSWORD:-postgres}
-      - PATRONI_REPLICATION_USERNAME=replicator
-      - PATRONI_REPLICATION_PASSWORD=${REPLICATION_PASSWORD:-replicator}
-      - USE_WALG=false
+      PATRONI_SCOPE: supabase-ha
+      PATRONI_NAME: patroni2
+      PATRONI_RESTAPI_LISTEN: 0.0.0.0:8008
+      PATRONI_RESTAPI_CONNECT_ADDRESS: patroni2:8008
+      PATRONI_POSTGRESQL_LISTEN: 0.0.0.0:5432
+      PATRONI_POSTGRESQL_CONNECT_ADDRESS: patroni2:5432
+      PATRONI_POSTGRESQL_DATA_DIR: /home/postgres/pgdata/data
+      PATRONI_ETCD3_HOSTS: etcd1:2379,etcd2:2379,etcd3:2379
+      PATRONI_SUPERUSER_USERNAME: postgres
+      PATRONI_SUPERUSER_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+      PATRONI_REPLICATION_USERNAME: replicator
+      PATRONI_REPLICATION_PASSWORD: ${REPLICATION_PASSWORD:-replicator}
+      POSTGRES_HOST: /var/run/postgresql
+      PGPORT: ${POSTGRES_PORT:-5432}
+      POSTGRES_PORT: ${POSTGRES_PORT:-5432}
+      PGPASSWORD: ${POSTGRES_PASSWORD:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+      PGDATABASE: ${POSTGRES_DB:-postgres}
+      POSTGRES_DB: ${POSTGRES_DB:-postgres}
+      JWT_SECRET: ${JWT_SECRET:-super-secret-jwt-token-with-at-least-32-characters}
+      JWT_EXP: ${JWT_EXPIRY:-3600}
     volumes:
       - patroni2-data:/home/postgres/pgdata
+      - db-config:/etc/postgresql-custom
     networks:
-      - patroni-dev
+      - supabase-ha
     depends_on:
       etcd1:
         condition: service_healthy
@@ -191,10 +207,10 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
-      start_period: 60s
+      start_period: 90s
 
   patroni3:
-    image: ghcr.io/zalando/spilo-16:3.2-p2
+    image: supabase-patroni:latest
     container_name: patroni3
     hostname: patroni3
     restart: unless-stopped
@@ -202,25 +218,32 @@ services:
       - "5434:5432"
       - "8010:8008"
     environment:
-      - SCOPE=postgres-ha
-      - PGVERSION=16
-      - PATRONI_SCOPE=postgres-ha
-      - PATRONI_NAME=patroni3
-      - PATRONI_RESTAPI_LISTEN=0.0.0.0:8008
-      - PATRONI_RESTAPI_CONNECT_ADDRESS=patroni3:8008
-      - PATRONI_POSTGRESQL_LISTEN=0.0.0.0:5432
-      - PATRONI_POSTGRESQL_CONNECT_ADDRESS=patroni3:5432
-      - PATRONI_POSTGRESQL_DATA_DIR=/home/postgres/pgdata/pgroot/data
-      - PATRONI_ETCD3_HOSTS=etcd1:2379,etcd2:2379,etcd3:2379
-      - PATRONI_SUPERUSER_USERNAME=postgres
-      - PATRONI_SUPERUSER_PASSWORD=${POSTGRES_PASSWORD:-postgres}
-      - PATRONI_REPLICATION_USERNAME=replicator
-      - PATRONI_REPLICATION_PASSWORD=${REPLICATION_PASSWORD:-replicator}
-      - USE_WALG=false
+      PATRONI_SCOPE: supabase-ha
+      PATRONI_NAME: patroni3
+      PATRONI_RESTAPI_LISTEN: 0.0.0.0:8008
+      PATRONI_RESTAPI_CONNECT_ADDRESS: patroni3:8008
+      PATRONI_POSTGRESQL_LISTEN: 0.0.0.0:5432
+      PATRONI_POSTGRESQL_CONNECT_ADDRESS: patroni3:5432
+      PATRONI_POSTGRESQL_DATA_DIR: /home/postgres/pgdata/data
+      PATRONI_ETCD3_HOSTS: etcd1:2379,etcd2:2379,etcd3:2379
+      PATRONI_SUPERUSER_USERNAME: postgres
+      PATRONI_SUPERUSER_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+      PATRONI_REPLICATION_USERNAME: replicator
+      PATRONI_REPLICATION_PASSWORD: ${REPLICATION_PASSWORD:-replicator}
+      POSTGRES_HOST: /var/run/postgresql
+      PGPORT: ${POSTGRES_PORT:-5432}
+      POSTGRES_PORT: ${POSTGRES_PORT:-5432}
+      PGPASSWORD: ${POSTGRES_PASSWORD:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+      PGDATABASE: ${POSTGRES_DB:-postgres}
+      POSTGRES_DB: ${POSTGRES_DB:-postgres}
+      JWT_SECRET: ${JWT_SECRET:-super-secret-jwt-token-with-at-least-32-characters}
+      JWT_EXP: ${JWT_EXPIRY:-3600}
     volumes:
       - patroni3-data:/home/postgres/pgdata
+      - db-config:/etc/postgresql-custom
     networks:
-      - patroni-dev
+      - supabase-ha
     depends_on:
       etcd1:
         condition: service_healthy
@@ -233,7 +256,7 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
-      start_period: 60s
+      start_period: 90s
 
   # ---------------------------------------------------------------------------
   # HAProxy Load Balancer
@@ -244,13 +267,13 @@ services:
     hostname: haproxy
     restart: unless-stopped
     ports:
-      - "5000:5000"   # Primary (R/W)
-      - "5001:5001"   # Replicas (R/O)
-      - "7000:7000"   # Stats
+      - "5000:5000" # Primary (R/W)
+      - "5001:5001" # Replicas (R/O)
+      - "7000:7000" # Stats Dashboard
     volumes:
-      - ./haproxy/haproxy.dev.cfg:/usr/local/etc/haproxy/haproxy.cfg:ro
+      - ./haproxy/haproxy.cfg:/usr/local/etc/haproxy/haproxy.cfg:ro
     networks:
-      - patroni-dev
+      - supabase-ha
     depends_on:
       patroni1:
         condition: service_healthy
@@ -262,7 +285,8 @@ volumes:
   patroni1-data:
   patroni2-data:
   patroni3-data:
+  db-config:
 
 networks:
-  patroni-dev:
+  supabase-ha:
     driver: bridge

@@ -1,6 +1,9 @@
-# Supabase values with external PostgreSQL Docker container
-# DB_HOST: host.docker.internal (for Docker Desktop on Windows)
-# DB_PORT: 5432
+# =============================================================================
+# Supabase with External PostgreSQL HA Cluster (Patroni + HAProxy)
+# =============================================================================
+# DB_HOST: host.docker.internal (Docker Desktop) or haproxy service IP
+# DB_PORT: 5000 (HAProxy primary port for R/W)
+# =============================================================================
 
 secret:
   jwt:
@@ -15,18 +18,18 @@ secret:
     password: this_password_is_insecure_and_should_be_updated
   db:
     username: postgres
-    password: example123456
+    password: postgres # Must match PATRONI_SUPERUSER_PASSWORD
     database: postgres
   analytics:
     apiKey: your-super-secret-and-long-logflare-key
 
-# Disabled - using external PostgreSQL Docker container
+# Disabled - using external PostgreSQL HA cluster (Patroni + HAProxy)
 db:
   enabled: false
 
 studio:
   image:
-    tag: "2025.11.17-sha-6a18e49"
+    tag: "2025.12.17-sha-43f4f7f"
   environment:
     STUDIO_DEFAULT_ORGANIZATION: "My Organization"
     STUDIO_DEFAULT_PROJECT: "My Project"
@@ -40,10 +43,11 @@ studio:
 
 auth:
   image:
-    tag: "v2.182.1"
+    tag: "v2.184.0"
   environment:
+    # HAProxy Primary (R/W) endpoint
     DB_HOST: host.docker.internal
-    DB_PORT: 5432
+    DB_PORT: "5000"
     API_EXTERNAL_URL: http://supabase.local
     GOTRUE_SITE_URL: http://supabase.local
     GOTRUE_EXTERNAL_EMAIL_ENABLED: "true"
@@ -57,15 +61,17 @@ rest:
   image:
     tag: "v14.1"
   environment:
+    # HAProxy Primary (R/W) endpoint
     DB_HOST: host.docker.internal
-    DB_PORT: 5432
+    DB_PORT: "5000"
 
 realtime:
   image:
-    tag: "v2.63.3"
+    tag: "v2.68.0"
   environment:
+    # HAProxy Primary (R/W) endpoint
     DB_HOST: host.docker.internal
-    DB_PORT: 5432
+    DB_PORT: "5000"
     DB_SSL: "false"
     APP_NAME: realtime
     FLY_APP_NAME: realtime
@@ -79,18 +85,20 @@ realtime:
 
 meta:
   image:
-    tag: "v0.93.1"
+    tag: "v0.95.1"
   environment:
+    # HAProxy Primary (R/W) endpoint
     DB_HOST: host.docker.internal
-    DB_PORT: 5432
+    DB_PORT: "5000"
 
 storage:
-  enabled: false
+  enabled: true
   image:
-    tag: "latest"
+    tag: "v1.33.0"
   environment:
+    # HAProxy Primary (R/W) endpoint
     DB_HOST: host.docker.internal
-    DB_PORT: 5432
+    DB_PORT: "5000"
   livenessProbe:
     httpGet:
       path: /status
@@ -101,7 +109,7 @@ storage:
 
 imgproxy:
   image:
-    tag: "v3.30.1"
+    tag: "v3.8.0"
   environment:
     IMGPROXY_ENABLE_WEBP_DETECTION: "true"
   livenessProbe:
@@ -116,7 +124,7 @@ imgproxy:
 kong:
   image:
     repository: kong
-    tag: "latest"
+    tag: "2.8.1"
   environment:
     KONG_DECLARATIVE_CONFIG: /usr/local/kong/kong.yml
     KONG_LOG_LEVEL: info
@@ -126,9 +134,6 @@ kong:
     annotations:
       nginx.ingress.kubernetes.io/rewrite-target: /
     tls: []
-      # - secretName: example-ingress-tls
-      #   hosts:
-      #     - supabase.local
     hosts:
       - host: supabase.local
         paths:
@@ -137,10 +142,11 @@ kong:
 
 analytics:
   image:
-    tag: "1.26.3"
+    tag: "1.27.0"
   environment:
+    # HAProxy Primary (R/W) endpoint
     DB_HOST: host.docker.internal
-    DB_PORT: 5432
+    DB_PORT: "5000"
   livenessProbe:
     httpGet:
       path: /health
@@ -149,15 +155,12 @@ analytics:
 
 vector:
   image:
-    tag: "0.34.0-alpine"
+    tag: "0.28.1-alpine"
   livenessProbe:
     httpGet:
       path: /health
       port: 9001
     initialDelaySeconds: 3
-  ## Vector requires logs from the control plane to function.
-  ## This is normally stored in /var/log/pods
-  ## Modify these values according to your environment.
   volumeMounts:
     - name: pod-logs
       mountPath: /var/log/pods
@@ -167,11 +170,9 @@ vector:
         path: /var/log/pods
 
 functions:
-  # Disabled - requires function files to be mounted
   enabled: false
   image:
-    tag: "v1.69.24"
+    tag: "v1.69.28"
   environment:
     DB_HOST: host.docker.internal
-    DB_PORT: 5432
-
+    DB_PORT: "5000"
